@@ -15,6 +15,9 @@ Android 本地自动记账工具。自动读取微信/支付宝/银行的通知�
 把 `app/build/outputs/apk/release/app-release.apk` 传到手机，点击安装。
 详见 **[docs/安装与使用.md](docs/安装与使用.md)**。
 
+**装完之后怎么验收**：照着 **[docs/真机验收清单.md](docs/真机验收清单.md)** 逐项打勾，
+约 15 分钟走完，最后把结果表贴回来即可。
+
 **如果要自己改代码**：用 Android Studio 打开本目录，点绿色三角运行。
 
 ---
