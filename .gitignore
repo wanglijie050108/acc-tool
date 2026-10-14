@@ -1,0 +1,31 @@
+# ── 构建产物 ──────────────────────────────────────────────
+/app/build/
+/build/
+.gradle/
+.cxx
+.externalNativeBuild
+*.apk
+*.ap_
+*.aab
+*.dex
+*.class
+*.hprof
+.kotlin/
+
+# ── 本机配置（含 SDK 路径，绝不提交）──────────────────────
+local.properties
+local.properties.bak
+
+# ── Android Studio / IntelliJ ────────────────────────────
+*.iml
+.idea/
+captures/
+.navigation/
+
+# ── 系统垃圾文件 ─────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── 交付物（APK 走 GitHub Release，不进版本库）────────────
+/交付物/

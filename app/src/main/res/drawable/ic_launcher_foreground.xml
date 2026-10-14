@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#2E7D52"
+        android:pathData="M0,0h108v108h-108z" />
+    <!-- 简化的账本/流水图形 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M32,30h44a4,4 0 0 1 4,4v40a4,4 0 0 1 -4,4h-44a4,4 0 0 1 -4,-4v-40a4,4 0 0 1 4,-4z" />
+    <path
+        android:fillColor="#2E7D52"
+        android:pathData="M38,42h32v4h-32z" />
+    <path
+        android:fillColor="#2E7D52"
+        android:pathData="M38,52h20v4h-20z" />
+    <path
+        android:fillColor="#2E7D52"
+        android:pathData="M38,62h26v4h-26z" />
+</vector>
