@@ -97,13 +97,25 @@ fun SettingsScreen(
                     append("自动读取微信、支付宝、银行的支付通知。")
                     append("这是记账的主要数据来源，不开则无法自动记账。")
                     if (notificationAccessGranted && !listenerConnected) {
-                        append("\n\n⚠️ 已授权但监听未连接。")
-                        append("通常是后台进程被系统冻结，退出重进本页面即可恢复。")
-                        append("若长期如此，请检查下面的「后台运行」设置。")
+                        append("\n\n⚠️ 已授权，但系统没有把监听服务连上 —— ")
+                        append("此时收不到任何通知，付款也不会被记录。\n\n")
+                        append("恢复办法（真机实测唯一有效的一条）：\n")
+                        append("点下面的按钮 → 找到「流水记账」→ 把开关关掉，再重新打开。\n\n")
+                        append("小米/红米请额外确认：设置 → 应用设置 → 应用管理 → ")
+                        append("流水记账 → 自启动，必须是打开状态。")
                     }
                 },
-                granted = notificationAccessGranted,
-                buttonText = "去开启",
+                granted = notificationAccessGranted && listenerConnected,
+                statusText = if (notificationAccessGranted && !listenerConnected) {
+                    "已授权·未连接"
+                } else {
+                    null
+                },
+                buttonText = if (notificationAccessGranted && !listenerConnected) {
+                    "去把开关关掉再打开"
+                } else {
+                    "去开启"
+                },
                 onClick = { openNotificationAccessSettings(context) },
             )
 
@@ -229,10 +241,15 @@ fun SettingsScreen(
 
             Text(
                 text = "国产 ROM 保活提示\n" +
-                    "小米：设置→应用→流水记账→省电策略→无限制，并在最近任务里加锁\n" +
-                    "华为：设置→应用→应用启动管理→手动管理，全部打开\n" +
-                    "OPPO/vivo：设置→电池→后台高耗电→允许\n" +
-                    "另外：不要在最近任务里划掉本应用，划掉会导致服务被终止。",
+                    "小米/红米：设置 → 应用设置 → 应用管理 → 流水记账 → " +
+                    "把「自启动」打开，并把「省电策略」设为无限制；" +
+                    "再在最近任务里给本应用加锁\n" +
+                    "华为：设置 → 应用 → 应用启动管理 → 手动管理，全部打开\n" +
+                    "OPPO/vivo：设置 → 电池 → 后台高耗电 → 允许\n" +
+                    "另外：不要在最近任务里划掉本应用，划掉会导致服务被终止。\n\n" +
+                    "⚠️ 如果你用「应用分身 / 双开」的微信、支付宝付款，本应用收不到它们的通知。\n" +
+                    "安卓的通知监听是按用户空间隔离的，分身属于另一个空间。\n" +
+                    "这种情况请用「导入账单」补记，或改用主空间的支付应用。",
                 fontSize = 12.sp,
                 lineHeight = 18.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -250,6 +267,8 @@ private fun PermissionCard(
     granted: Boolean,
     buttonText: String,
     onClick: () -> Unit,
+    /** 覆盖右上角状态文字。用于「已授权但监听未连接」这种需要说清楚的中间态 */
+    statusText: String? = null,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -270,7 +289,7 @@ private fun PermissionCard(
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = if (granted) "已开启" else "未开启",
+                    text = statusText ?: if (granted) "已开启" else "未开启",
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium,
                     color = if (granted) MaterialTheme.colorScheme.primary

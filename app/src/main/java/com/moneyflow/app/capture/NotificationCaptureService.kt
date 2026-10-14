@@ -7,6 +7,7 @@ import android.service.notification.StatusBarNotification
 import android.util.Log
 import com.moneyflow.app.data.SampleRecorder
 import com.moneyflow.app.data.TransactionRepository
+import com.moneyflow.app.parse.MoneyText
 import com.moneyflow.app.parse.ParseEngine
 import com.moneyflow.app.parse.ParseResult
 import kotlinx.coroutines.CoroutineScope
@@ -129,7 +130,8 @@ class NotificationCaptureService : NotificationListenerService() {
                 // 绝大多数通知都不含金额，这是正常情况，不打日志避免刷屏。
                 // 但「看起来像钱、却没识别出来」的通知必须留档 ——
                 // 这些正是需要补规则的样本，用户平时根本不会主动报告。
-                if (looksMoneyRelated(rawText)) {
+                // 统一走 MoneyText：验证码类内容不会被留档
+                if (MoneyText.looksMoneyRelated(rawText)) {
                     SampleRecorder.record(
                         context = applicationContext,
                         packageName = packageName,
@@ -146,22 +148,6 @@ class NotificationCaptureService : NotificationListenerService() {
                 Log.w(TAG, "解析失败：${result.reason}")
             }
         }
-    }
-
-    /**
-     * 判断一段文本「看起来和钱有关」。
-     *
-     * 用途：只留档可能有价值的样本，避免把聊天记录、推送广告全存下来。
-     * 判定宽松一点没关系（宁可多存），因为用户导出前能看到内容。
-     */
-    private fun looksMoneyRelated(text: String): Boolean {
-        if (text.length > 500) return false
-        val markers = listOf(
-            "元", "¥", "￥", "支出", "收入", "消费", "付款", "支付",
-            "扣款", "转账", "收款", "到账", "退款", "还款", "提现",
-            "余额", "账单", "交易",
-        )
-        return markers.any { text.contains(it) }
     }
 
     override fun onDestroy() {
