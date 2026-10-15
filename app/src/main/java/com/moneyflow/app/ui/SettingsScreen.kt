@@ -1,9 +1,6 @@
 package com.moneyflow.app.ui
 
 import android.content.Context
-import android.content.Intent
-import android.os.Build
-import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -37,17 +34,22 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.app.NotificationManagerCompat
 import com.moneyflow.app.capture.NotificationCaptureService
 
 /**
- * 设置页。核心职责：引导用户完成三项必须手动开启的系统权限。
- * App 无法自动申请这些权限，只能跳转设置页。
+ * 设置页。核心职责：引导用户完成三项必须开启的系统权限。
+ *
+ * ⚠️ 按钮行为**不是**一律跳系统设置页：
+ * 短信 / 通知 / 电池优化这三项由 App 自己弹系统对话框（用户点一下就好），
+ * 只有「通知使用权」是平台不允许 App 申请的，才必须跳系统列表。
+ * 这个分流由 [PermissionRequest] 统一判断，本文件不自己写 startActivity。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
+    /** 用户点了某一项权限的按钮。分流逻辑在 MainActivity → PermissionRequest */
+    onRequestPermission: (PermissionRequest.Kind) -> Unit,
     onOpenParseBench: () -> Unit,
     onOpenCsvImport: () -> Unit,
     onOpenSampleExport: () -> Unit,
@@ -55,9 +57,9 @@ fun SettingsScreen(
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
 
-    val notificationAccessGranted = isNotificationAccessGranted(context)
-    val smsGranted = isSmsGranted(context)
-    val batteryOptimized = isIgnoringBatteryOptimizations(context)
+    val notificationAccessGranted = PermissionRequest.isNotificationAccessGranted(context)
+    val smsGranted = PermissionRequest.isSmsGranted(context)
+    val batteryOptimized = PermissionRequest.isIgnoringBatteryOptimizations(context)
 
     // 监听是否真的连着。授权为真但未连接 = 收不到通知，用户却看不出来。
     // 用 remember + key 让它每次进入界面重新计算。
@@ -95,7 +97,10 @@ fun SettingsScreen(
                 title = "1. 通知使用权（必须）",
                 description = buildString {
                     append("自动读取微信、支付宝、银行的支付通知。")
-                    append("这是记账的主要数据来源，不开则无法自动记账。")
+                    append("这是记账的主要数据来源，不开则无法自动记账。\n\n")
+                    append("⚠️ 这一项 Android 不允许 App 自己弹窗申请，")
+                    append("点下面的按钮会打开系统的开关列表，")
+                    append("请找到「流水记账」把开关打开。")
                     if (notificationAccessGranted && !listenerConnected) {
                         append("\n\n⚠️ 已授权，但系统没有把监听服务连上 —— ")
                         append("此时收不到任何通知，付款也不会被记录。\n\n")
@@ -116,7 +121,7 @@ fun SettingsScreen(
                 } else {
                     "去开启"
                 },
-                onClick = { openNotificationAccessSettings(context) },
+                onClick = { onRequestPermission(PermissionRequest.Kind.NOTIFICATION_ACCESS) },
             )
 
             Spacer(Modifier.height(10.dp))
@@ -124,10 +129,11 @@ fun SettingsScreen(
             PermissionCard(
                 title = "2. 短信权限（推荐）",
                 description = "读取银行扣款短信。银行短信格式最规范，识别最准，" +
-                    "能与通知互相补漏。",
+                    "能与通知互相补漏。\n\n点下面的按钮会**直接弹出系统授权框**，" +
+                    "点「允许」即可，不用自己去设置里找。",
                 granted = smsGranted,
-                buttonText = "去开启",
-                onClick = { openAppSettings(context) },
+                buttonText = if (smsGranted) "已开启" else "点这里授权",
+                onClick = { onRequestPermission(PermissionRequest.Kind.SMS) },
             )
 
             Spacer(Modifier.height(10.dp))
@@ -135,10 +141,11 @@ fun SettingsScreen(
             PermissionCard(
                 title = "3. 后台运行（强烈建议）",
                 description = "关闭电池优化，减少系统杀掉后台服务的概率。" +
-                    "国产 ROM 还需在「最近任务」里给本应用加锁。",
+                    "国产 ROM 还需在「最近任务」里给本应用加锁。\n\n" +
+                    "点下面的按钮会弹出系统的「是否允许忽略电池优化」对话框。",
                 granted = batteryOptimized,
-                buttonText = "去关闭",
-                onClick = { openBatterySettings(context) },
+                buttonText = if (batteryOptimized) "已关闭" else "点这里关闭",
+                onClick = { onRequestPermission(PermissionRequest.Kind.BATTERY) },
             )
 
             Spacer(Modifier.height(24.dp))
@@ -347,53 +354,12 @@ private fun PermissionCard(
 }
 
 // ─────────────── 权限检测与跳转 ───────────────
-
-/** 检查通知使用权是否已授予 */
-fun isNotificationAccessGranted(context: Context): Boolean {
-    val enabled = NotificationManagerCompat.getEnabledListenerPackages(context)
-    return enabled.contains(context.packageName)
-}
-
-/** 检查短信读取权限 */
-fun isSmsGranted(context: Context): Boolean {
-    return context.checkSelfPermission(android.Manifest.permission.READ_SMS) ==
-        android.content.pm.PackageManager.PERMISSION_GRANTED
-}
-
-/** 检查是否已忽略电池优化 */
-fun isIgnoringBatteryOptimizations(context: Context): Boolean {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
-    val manager = context.getSystemService(android.os.PowerManager::class.java) ?: return false
-    return manager.isIgnoringBatteryOptimizations(context.packageName)
-}
-
-/** 跳转到「通知使用权」设置页 */
-fun openNotificationAccessSettings(context: Context) {
-    try {
-        context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-    } catch (_: Throwable) {
-        openAppSettings(context)
-    }
-}
-
-/** 跳转到本应用的系统设置页 */
-fun openAppSettings(context: Context) {
-    try {
-        context.startActivity(
-            Intent(
-                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                android.net.Uri.fromParts("package", context.packageName, null),
-            )
-        )
-    } catch (_: Throwable) {
-    }
-}
-
-/** 跳转到电池优化设置 */
-fun openBatterySettings(context: Context) {
-    try {
-        context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-    } catch (_: Throwable) {
-        openAppSettings(context)
-    }
-}
+//
+// ⚠️ 本文件**不再自己实现**权限查询和跳转。
+// 它们全部在 PermissionRequest 里，只有一份实现。
+//
+// 这么改的原因是这个项目已经吃过两次「同一逻辑写两份」的亏：
+//   - 指纹算法（已抽成 Fingerprint）
+//   - 「和钱有关」判定（已抽成 MoneyText，之前通知/短信各一份 → 验证码漏留档）
+// 权限原本也散在 MainActivity 和本文件两处，且「哪些能弹窗」的知识只写在注释里。
+// 想要新增一项权限引导时，**加到 PermissionRequest.Kind**，不要在这里 new Intent。

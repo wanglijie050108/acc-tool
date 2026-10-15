@@ -1,7 +1,6 @@
 package com.moneyflow.app
 
 import android.content.Intent
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -16,6 +15,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.moneyflow.app.capture.KeepAliveService
 import com.moneyflow.app.capture.NotificationCaptureService
 import com.moneyflow.app.ui.ParseBenchScreen
+import com.moneyflow.app.ui.PermissionRequest
 import com.moneyflow.app.ui.SettingsScreen
 import com.moneyflow.app.ui.TransactionListScreen
 import com.moneyflow.app.ui.TransactionViewModel
@@ -29,9 +29,14 @@ class MainActivity : ComponentActivity() {
 
     private val viewModel: TransactionViewModel by viewModels()
 
-    private val permissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { /* 用户选择结果不影响主流程，设置页会实时显示状态 */ }
+    /**
+     * 运行时权限申请器（短信 + 通知）。
+     *
+     * 由 [PermissionRequest] 统一创建，保证「申请哪些权限」只有一份定义。
+     * 注册必须在 Activity 创建时完成（`registerForActivityResult` 的要求），
+     * 所以放在字段初始化而不是 onCreate 里。
+     */
+    private val permissionLauncher = PermissionRequest.runtimeLauncher(this)
 
     /** CSV 文件选择器。用 OpenDocument 让用户从「最近文件」或文件管理器里挑 */
     private val csvPicker = registerForActivityResult(
@@ -62,9 +67,19 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // 申请短信与通知权限。通知使用权无法在这里申请，必须用户去设置页手动开。
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            permissionLauncher.launch(MoneyFlowApp.RUNTIME_PERMISSIONS)
+        // 申请短信与通知权限 —— 由 App 自己弹系统的运行时权限对话框。
+        //
+        // ⚠️ 这里有意加了三道判断，都是踩过的坑：
+        //   1. savedInstanceState == null：只在**冷启动**弹。
+        //      旋转屏幕 / 从后台回来时 savedInstanceState 非空，
+        //      不加这条会每次重建都弹一次，像骚扰。
+        //   2. needsRuntimePrompt：**已经给过的权限不再弹**。
+        //      否则 Android 会静默返回，而且反复弹会触发系统的「不再询问」，
+        //      反而把用户永久锁在外面。
+        //   3. 只申请能弹的（短信 / 通知）。通知使用权和电池优化弹不出来，
+        //      它们在设置页里引导，不该在启动时把用户拽到系统界面。
+        if (savedInstanceState == null && PermissionRequest.needsRuntimePrompt(this)) {
+            PermissionRequest.requestRuntimePermissions(permissionLauncher)
         }
 
         // 确保保活服务在跑
@@ -85,6 +100,21 @@ class MainActivity : ComponentActivity() {
 
                     Screen.SETTINGS -> SettingsScreen(
                         onBack = { screen = Screen.LIST },
+                        // 设置页的「去开启」按钮走这里：能弹系统弹窗就弹，
+                        // 弹不了才跳系统设置页（判断逻辑在 PermissionRequest 里）。
+                        onRequestPermission = { kind ->
+                            when (kind) {
+                                PermissionRequest.Kind.SMS,
+                                PermissionRequest.Kind.NOTIFICATION ->
+                                    PermissionRequest.requestRuntimePermissions(permissionLauncher)
+
+                                PermissionRequest.Kind.BATTERY ->
+                                    PermissionRequest.requestIgnoreBatteryOptimizations(this)
+
+                                PermissionRequest.Kind.NOTIFICATION_ACCESS ->
+                                    PermissionRequest.openNotificationListenerSettings(this)
+                            }
+                        },
                         onOpenParseBench = { screen = Screen.PARSE_BENCH },
                         onOpenCsvImport = {
                             viewModel.clearImportMessages()

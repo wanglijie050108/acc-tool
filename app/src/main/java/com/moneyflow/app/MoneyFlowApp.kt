@@ -1,6 +1,5 @@
 package com.moneyflow.app
 
-import android.Manifest
 import android.app.Application
 import com.moneyflow.app.capture.KeepAliveService
 import com.moneyflow.app.parse.CustomRuleStore
@@ -22,21 +21,12 @@ class MoneyFlowApp : Application() {
         }
     }
 
-    /** 用户改完规则后调用，让新规则立即生效 */
+    /**
+     * 用户改完规则后调用，让新规则立即生效
+     */
     fun reloadCustomRules() {
         CustomRuleStore.invalidate()
         ParseEngine.setCustomRules(CustomRuleStore.load(this))
-    }
-
-    companion object {
-        /** 运行时需要申请的权限集合 */
-        val RUNTIME_PERMISSIONS = buildList {
-            add(Manifest.permission.RECEIVE_SMS)
-            add(Manifest.permission.READ_SMS)
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                add(Manifest.permission.POST_NOTIFICATIONS)
-            }
-        }.toTypedArray()
     }
 }
 
