@@ -1,5 +1,6 @@
 package com.moneyflow.app
 
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -68,6 +69,9 @@ class MainActivity : ComponentActivity() {
 
         // 确保保活服务在跑
         KeepAliveService.start(this)
+
+        // 处理「点通知进来补金额」的入口
+        handlePendingTransferIntent(intent)
 
         setContent {
             MoneyFlowTheme {
@@ -158,5 +162,42 @@ class MainActivity : ComponentActivity() {
         // 每次回到前台都请求一次重连，让服务自动恢复。
         // 这是「自愈」：用户只要打开一次 App，监听就重新生效。
         NotificationCaptureService.requestRebind(this)
+    }
+
+    /**
+     * 处理通知点击带来的「补金额」请求。
+     *
+     * 两条路径都会走到这里：
+     *   - onCreate：App 没在跑，冷启动
+     *   - onNewIntent：App 已在跑（比如用户在设置页），热启动
+     * 所以两边都要调，且必须能重复调用而无副作用。
+     */
+    private fun handlePendingTransferIntent(intent: Intent?) {
+        if (intent?.action != ACTION_CONFIRM_PENDING) return
+        val pendingId = intent.getLongExtra(EXTRA_PENDING_ID, -1L)
+        if (pendingId <= 0L) return
+
+        // ⚠️ viewModel 必须在这里才访问。
+        // 它是 by viewModels() 懒加载的，onCreate 里访问是安全的
+        // （ComponentActivity 已把 ViewModelStore 准备好了）。
+        viewModel.openPendingConfirmById(pendingId)
+
+        // 消费掉这个 action，避免旋转屏幕等配置变更后重新触发一次弹窗
+        intent.action = null
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // 让后续 getIntent() 返回新的，保持状态一致
+        setIntent(intent)
+        handlePendingTransferIntent(intent)
+    }
+
+    companion object {
+        /** 转账提醒通知点击时带的 action */
+        const val ACTION_CONFIRM_PENDING = "com.moneyflow.app.action.CONFIRM_PENDING_TRANSFER"
+
+        /** 待确认记录的 id */
+        const val EXTRA_PENDING_ID = "pending_id"
     }
 }

@@ -102,10 +102,10 @@ class MigrationTest {
         helper.close()
     }
 
-    /** 用真实 Room 打开 v1 库，触发迁移到 v2 */
+    /** 用真实 Room 打开 v1 库，触发迁移一路升到最新版 */
     private fun openWithMigration(): AppDatabase =
         Room.databaseBuilder(context, AppDatabase::class.java, dbName)
-            .addMigrations(AppDatabase.MIGRATION_1_2)
+            .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3)
             .allowMainThreadQueries()
             .build()
 
@@ -187,6 +187,146 @@ class MigrationTest {
             val all = db.transactionDao().observeAll().first()
             assertEquals(2, all.size)
             assertTrue(all.any { it.amount == 99.0 })
+        } finally {
+            db.close()
+        }
+    }
+
+    // ─────────────── v2 → v3：新增待确认转账表 ───────────────
+
+    /**
+     * v2 时代的建表语句：有 transactions 和 raw_samples，没有 pending_transfers。
+     * 这是「用户已经装了带样本功能的版本」的状态。
+     */
+    private fun createV2Database() {
+        context.deleteDatabase(dbName)
+        val config = SupportSQLiteOpenHelper.Configuration.builder(context)
+            .name(dbName)
+            .callback(object : SupportSQLiteOpenHelper.Callback(2) {
+                override fun onCreate(db: SupportSQLiteDatabase) {
+                    db.execSQL(v1TransactionTable)
+                    db.execSQL(
+                        "CREATE INDEX IF NOT EXISTS index_transactions_occurredAt " +
+                            "ON transactions (occurredAt)"
+                    )
+                    db.execSQL(
+                        "CREATE INDEX IF NOT EXISTS index_transactions_fingerprint " +
+                            "ON transactions (fingerprint)"
+                    )
+                    db.execSQL(
+                        """
+                        CREATE TABLE IF NOT EXISTS `raw_samples` (
+                            `id` INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                            `packageName` TEXT,
+                            `title` TEXT,
+                            `text` TEXT NOT NULL,
+                            `receivedAt` INTEGER NOT NULL,
+                            `matched` INTEGER NOT NULL,
+                            `ruleId` TEXT
+                        )
+                        """.trimIndent()
+                    )
+                    db.execSQL(
+                        "CREATE TABLE IF NOT EXISTS room_master_table " +
+                            "(id INTEGER PRIMARY KEY, identity_hash TEXT)"
+                    )
+                    db.execSQL(
+                        "INSERT OR REPLACE INTO room_master_table (id, identity_hash) " +
+                            "VALUES(42, '')"
+                    )
+                }
+
+                override fun onUpgrade(db: SupportSQLiteDatabase, old: Int, new: Int) = Unit
+            })
+            .build()
+
+        val helper = FrameworkSQLiteOpenHelperFactory().create(config)
+        helper.writableDatabase.use { db ->
+            db.execSQL(
+                "INSERT INTO transactions " +
+                    "(amount, direction, sourceKind, sourceName, occurredAt, createdAt, confirmed) " +
+                    "VALUES (58.0, 'EXPENSE', 'WECHAT_NOTIFICATION', '微信支付', " +
+                    "1700000000000, 1700000000000, 0)"
+            )
+            db.execSQL(
+                "INSERT INTO raw_samples " +
+                    "(packageName, text, receivedAt, matched) " +
+                    "VALUES ('com.tencent.mm', '微信支付-¥58.00', 1700000000000, 1)"
+            )
+        }
+        helper.close()
+    }
+
+    @Test
+    fun migrationV2ToV3PreservesExistingData() = runTest {
+        createV2Database()
+
+        val db = openWithMigration()
+        try {
+            // 已有的流水和样本都必须完好
+            assertEquals("流水不应丢失", 1, db.transactionDao().observeAll().first().size)
+            assertEquals("样本不应丢失", 1, db.rawSampleDao().count())
+            // 新表可用
+            assertEquals(0, db.pendingTransferDao().observeAll().first().size)
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun migrationV2ToV3CreatesUsablePendingTransfersTable() = runTest {
+        createV2Database()
+
+        val db = openWithMigration()
+        try {
+            val dao = db.pendingTransferDao()
+            dao.insert(
+                com.moneyflow.app.data.PendingTransferEntity(
+                    packageName = "com.tencent.mm",
+                    sourceName = "微信转账",
+                    rawText = "[转账]已被接收",
+                    detectedAt = 1_700_000_000_000L,
+                    direction = Direction.EXPENSE,
+                    dedupKey = "com.tencent.mm|[转账]已被接收",
+                )
+            )
+            val all = dao.observeAll().first()
+            assertEquals(1, all.size)
+            assertEquals("[转账]已被接收", all.first().rawText)
+            assertEquals(Direction.EXPENSE, all.first().direction)
+        } finally {
+            db.close()
+        }
+    }
+
+    /** 去重键查询：这是防止同一笔转账反复提醒的关键 */
+    @Test
+    fun pendingTransferDedupQueryWorks() = runTest {
+        createV2Database()
+
+        val db = openWithMigration()
+        try {
+            val dao = db.pendingTransferDao()
+            val key = "com.tencent.mm|[转账]已被接收"
+            dao.insert(
+                com.moneyflow.app.data.PendingTransferEntity(
+                    packageName = "com.tencent.mm",
+                    sourceName = "微信转账",
+                    rawText = "[转账]已被接收",
+                    detectedAt = 1_700_000_000_000L,
+                    direction = Direction.EXPENSE,
+                    dedupKey = key,
+                )
+            )
+
+            // 窗口内 → 命中
+            assertTrue(
+                dao.findDuplicate(key, 1_700_000_000_000L - 1000, 1_700_000_000_000L + 1000) != null
+            )
+            // 窗口外 → 不命中（用户后来真的又转了一笔相同的）
+            assertTrue(
+                dao.findDuplicate(key, 1_700_000_000_000L + 900_000, 1_700_000_000_000L + 901_000) == null
+            )
         } finally {
             db.close()
         }

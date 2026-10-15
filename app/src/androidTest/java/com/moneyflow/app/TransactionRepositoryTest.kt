@@ -41,7 +41,7 @@ class TransactionRepositoryTest {
             ApplicationProvider.getApplicationContext(),
             AppDatabase::class.java,
         ).allowMainThreadQueries().build()
-        repository = TransactionRepository(db.transactionDao())
+        repository = TransactionRepository(db.transactionDao(), db.pendingTransferDao())
     }
 
     @After
@@ -350,9 +350,9 @@ class TransactionRepositoryTest {
     @Test
     fun enumsRoundTripCorrectly() = runTest {
         repository.save(entity(1.0, Direction.INCOME, 1_000L, sourceName = "A"))
-        repository.save(entity(2.0, Direction.NEUTRAL, 2_000L, sourceName = "B"))
+        repository.save(entity(2.0, Direction.EXPENSE, 2_000L, sourceName = "B"))
         val all = repository.observeAll().first()
-        assertEquals(Direction.NEUTRAL, all[0].direction)
+        assertEquals(Direction.EXPENSE, all[0].direction)
         assertEquals(Direction.INCOME, all[1].direction)
     }
 

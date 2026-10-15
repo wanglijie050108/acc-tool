@@ -67,8 +67,8 @@ class ParseEngineTest {
         "微信支付\n向 肯德基 付款\n¥29.90", "com.tencent.mm", 29.9, Direction.EXPENSE, "微信-换行"
     )
 
-    fun testWechatWithdrawIsNeutral() = assertParsed(
-        "微信支付 零钱提现 ¥500.00", "com.tencent.mm", 500.0, Direction.NEUTRAL, "微信-提现"
+    fun testWechatWithdrawIsExpense() = assertParsed(
+        "微信支付 零钱提现 ¥500.00", "com.tencent.mm", 500.0, Direction.EXPENSE, "微信-提现"
     )
 
     // ── 支付宝 ──
@@ -101,12 +101,12 @@ class ParseEngineTest {
         null, 5000.0, Direction.INCOME, "短信-收入"
     )
 
-    fun testSmsRepaymentIsNeutral() = assertParsed(
-        "您尾号1234账户还款人民币3000.00元", null, 3000.0, Direction.NEUTRAL, "短信-还款"
+    fun testSmsRepaymentIsExpense() = assertParsed(
+        "您尾号1234账户还款人民币3000.00元", null, 3000.0, Direction.EXPENSE, "短信-还款"
     )
 
-    fun testSmsWithdrawIsNeutral() = assertParsed(
-        "您尾号1234账户提现人民币500.00元", null, 500.0, Direction.NEUTRAL, "短信-提现"
+    fun testSmsWithdrawIsExpense() = assertParsed(
+        "您尾号1234账户提现人民币500.00元", null, 500.0, Direction.EXPENSE, "短信-提现"
     )
 
     fun testSmsLargeAmount() = assertParsed(
@@ -208,15 +208,15 @@ class ParseEngineTest {
             "微信-千分位" to ::testWechatThousandsSeparator,
             "微信-全角减号" to ::testWechatFullWidthMinus,
             "微信-换行" to ::testWechatNewlines,
-            "微信-提现为NEUTRAL" to ::testWechatWithdrawIsNeutral,
+            "微信-提现为支出" to ::testWechatWithdrawIsExpense,
             "支付宝-付款" to ::testAlipayPay,
             "支付宝-商户" to ::testAlipayMerchant,
             "支付宝-收款" to ::testAlipayReceive,
             "支付宝-整数" to ::testAlipayIntegerAmount,
             "短信-支出" to ::testSmsExpense,
             "短信-收入" to ::testSmsIncome,
-            "短信-还款为NEUTRAL" to ::testSmsRepaymentIsNeutral,
-            "短信-提现为NEUTRAL" to ::testSmsWithdrawIsNeutral,
+            "短信-还款为支出" to ::testSmsRepaymentIsExpense,
+            "短信-提现为支出" to ::testSmsWithdrawIsExpense,
             "短信-十万级" to ::testSmsLargeAmount,
             "短信-转入" to ::testSmsTransferIn,
             "忽略-仅余额" to ::testIgnoreBalanceOnly,

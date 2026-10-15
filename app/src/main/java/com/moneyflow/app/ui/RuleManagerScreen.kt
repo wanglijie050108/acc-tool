@@ -309,7 +309,6 @@ private fun ExplanationCard() {
 private fun Direction.label(): String = when (this) {
     Direction.EXPENSE -> "支出"
     Direction.INCOME -> "收入"
-    Direction.NEUTRAL -> "中性"
 }
 
 /**

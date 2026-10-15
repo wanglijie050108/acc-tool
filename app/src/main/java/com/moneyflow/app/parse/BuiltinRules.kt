@@ -27,12 +27,26 @@ object BuiltinRules {
         // ─────────────── 微信支付 ───────────────
 
         // 「微信支付」向你转账 / 收款到账
+        //
+        // ⚠️ 这里**绝不能**用裸的「收款」二字（曾经就是「收款|到账|收到」）：
+        // 微信的**付款**通知里写着「收款方：星巴克 ¥38.50」——
+        // 那是「收款方」这个名词，指商家，语义是**支出**。
+        // 裸「收款」会命中它，且本规则优先级(20)高于 wechat_pay_merchant(15)，
+        // 于是把一笔支出记成了**收入**（真机复现，见回归测试
+        // wechatPayeeLabelIsNotMistakenForIncome）。
+        // 同理「收到」也太泛（「收到货」「收到消息」都可能带数字）。
+        //
+        // 所以只保留**能确定是资金入账**的写法，并要求金额紧跟在动词之后，
+        // 避免用 .*? 跨字段去抓一个不相干的数字。
         ParseRule(
             id = "wechat_receive",
             sourceKind = SourceKind.WECHAT_NOTIFICATION,
             sourceName = "微信支付",
             packageNames = setOf(PKG_WECHAT),
-            pattern = Regex("""(?:收款|到账|收到).*?[¥￥]?\s*([\d,]+\.?\d*)"""),
+            pattern = Regex(
+                """(?:收款到账|收款成功|已收款|收款通知|收到转账|收到一笔|收到红包|到账)\s*""" +
+                    """(?:通知|提醒)?\s*[:：]?\s*[¥￥]?\s*([\d,]+\.?\d*)"""
+            ),
             direction = Direction.INCOME,
             priority = 20,
         ),
@@ -88,12 +102,18 @@ object BuiltinRules {
         ),
 
         // 支付宝：收款到账
+        //
+        // 与 wechat_receive 同样的坑：不能用裸的「收款」——
+        // 支付宝的付款通知里也有「收款方」字样，会把支出记成收入。
         ParseRule(
             id = "alipay_receive",
             sourceKind = SourceKind.ALIPAY_NOTIFICATION,
             sourceName = "支付宝",
             packageNames = setOf(PKG_ALIPAY),
-            pattern = Regex("""(?:收款|到账|收到).*?[¥￥]?\s*([\d,]+\.?\d*)"""),
+            pattern = Regex(
+                """(?:收款到账|收款成功|已收款|收款通知|收到转账|收到一笔|收到红包|到账)\s*""" +
+                    """(?:通知|提醒)?\s*[:：]?\s*[¥￥]?\s*([\d,]+\.?\d*)"""
+            ),
             direction = Direction.INCOME,
             priority = 20,
         ),
@@ -221,10 +241,20 @@ object BuiltinRules {
 
         // ─────────────── 资金流动类（需求：只要有金钱变动都记） ───────────────
         // 这些不是「消费」，但属于资金变动，用户明确要求一并记录。
-        // 方向标记为 NEUTRAL：因为还款/提现/充值往往是账户间转移，
-        // 当成支出或收入都会让统计失真。
+        //
+        // ⚠️ **没有「中性」方向了**（曾经有，已按用户要求删除）。
+        // 还款/提现/充值这些账户间转移**必须判断出确定方向**：
+        //   - 钱离开当前账户（提现、取现、还款、充值）→ EXPENSE
+        //   - 钱进入当前账户（到账、入账、转入、收款） → INCOME
+        //
+        // 为什么不再用「中性」：月度汇总只按 EXPENSE/INCOME 求和，
+        // 中性记录在界面上是黑色无符号数字，既不进支出也不进收入 ——
+        // 用户提现 500 元，统计上完全看不出变化，只会以为「App 没记上」。
+        // 把「不知道」当成答案是错的；方向确实判断不了的场景应该走
+        // 「待确认」流程去问用户，而不是记一条方向不明的流水。
 
-        // 信用卡还款
+        // 信用卡还款 → 支出
+        // 钱从你的储蓄卡离开去还信用卡，对「你的钱包」而言是流出。
         ParseRule(
             id = "sms_repayment",
             sourceKind = SourceKind.BANK_SMS,
@@ -234,43 +264,109 @@ object BuiltinRules {
             smsOnly = true,
             packageNames = emptySet(),
             pattern = Regex("""(?:还款|已还|偿还)\s*(?:金额)?\s*(?:人民币)?\s*[¥￥]?\s*([\d,]+\.?\d*)\s*元"""),
-            direction = Direction.NEUTRAL,
+            direction = Direction.EXPENSE,
             priority = 25,
         ),
 
-        // 提现 / 充值 / 转存
+        // 提现 / 取现 / 充值 / 转存 → 支出
+        // 这些都是钱**离开当前账户**的动作：零钱提现到银行卡、
+        // 从银行卡充值到零钱、转存到别的账户 —— 对当前账户都是流出。
         ParseRule(
-            id = "sms_transfer_neutral",
+            id = "sms_transfer_expense",
             sourceKind = SourceKind.BANK_SMS,
             sourceName = "银行短信",
             // 短信专属：这条规则宽松，绝不能让它在 App 通知上生效，
             // 否则会抢走微信/支付宝规则的匹配（真实发生过的 bug）
             smsOnly = true,
             packageNames = emptySet(),
-            pattern = Regex("""(?:提现|充值|转存|转账)\s*(?:金额)?\s*(?:人民币)?\s*[¥￥]?\s*([\d,]+\.?\d*)\s*元"""),
-            direction = Direction.NEUTRAL,
+            pattern = Regex("""(?:提现|取现|充值|转存)\s*(?:金额)?\s*(?:人民币)?\s*[¥￥]?\s*(\d[\d,]*(?:\.\d{1,2})?)\s*元"""),
+            direction = Direction.EXPENSE,
             priority = 22,
         ),
 
-        // 微信零钱提现（含「零钱」字样，避免被通用支出规则吃掉而标成 EXPENSE）
+        // 银行侧的「提现到账」→ 收入。
+        //
+        // ⚠️ 必须**排在** sms_transfer_expense(22) 前面，否则含「提现」二字的
+        // 到账短信会被上面那条按支出吃掉。
+        //
+        // 语义差别只有「到账」两个字，方向却相反：
+        //   「您尾号1234账户提现人民币500.00元」      → 你在别处发起的提现，支出
+        //   「您的零钱提现到账 500.00元」             → 钱进了这张卡，收入
+        // 这正是 BuiltinRules 里踩过的「收款 vs 收款方」同类坑。
+        ParseRule(
+            id = "sms_withdraw_arrival_income",
+            sourceKind = SourceKind.BANK_SMS,
+            sourceName = "银行短信",
+            smsOnly = true,
+            packageNames = emptySet(),
+            pattern = Regex("""(?:提现|转账|转存|汇款).{0,10}?(?:到账|入账|已到账)\s*(?:金额)?\s*(?:人民币)?\s*[¥￥]?\s*(\d[\d,]*(?:\.\d{1,2})?)\s*元?"""),
+            direction = Direction.INCOME,
+            priority = 26,
+        ),
+
+        // 微信零钱提现 → 支出（零钱少了一笔）
+        //
+        // 提现通知的两种形态：
+        //   「微信支付 零钱提现 ¥500.00」                      → 金额紧跟「提现」
+        //   「微信支付 零钱提现 手续费 0.10 元 到账 500.00 元」 → 金额在「到账」后
+        //
+        // ⚠️ 不能用 .*? 一把抓，否则会把「手续费 0.10」当成提现金额（实测过）。
+        // 做法：先用一条「到账 N」的规则吃掉带手续费的形态，
+        // 再用原来的「提现 N」形态兜底。两条规则共享同一 id 语义，
+        // 用优先级区分先后，金额始终在第 1 组 —— 不动引擎逻辑。
+        //
+        // ⚠️ 金额组写成 (\d[\d,]*(?:\.\d{1,2})?) 而不是 ([\d,]+\.?\d*)：
+        // 后者两段都可空，**能匹配空字符串**。一旦「到账」后面不是它预期的
+        // 数字形态（例如「已到账,请查收」），它会匹配到空串，
+        // parseAmount("") 返回 null → 引擎 continue 换下一条规则 →
+        // **整条通知被静默丢弃，用户完全无从察觉**。这个 bug 实测复现过。
+        ParseRule(
+            id = "wechat_withdraw_settled",
+            sourceKind = SourceKind.WECHAT_NOTIFICATION,
+            sourceName = "微信支付",
+            packageNames = setOf(PKG_WECHAT),
+            pattern = Regex(
+                """(?:零钱提现|提现).{0,30}?(?:到账|成功|已完成)\s*[¥￥]?\s*(\d[\d,]*(?:\.\d{1,2})?)\s*元?"""
+            ),
+            direction = Direction.EXPENSE,
+            priority = 23,
+        ),
+
         ParseRule(
             id = "wechat_withdraw",
             sourceKind = SourceKind.WECHAT_NOTIFICATION,
             sourceName = "微信支付",
             packageNames = setOf(PKG_WECHAT),
-            pattern = Regex("""(?:零钱提现|提现).*?[¥￥]?\s*([\d,]+\.?\d*)"""),
-            direction = Direction.NEUTRAL,
+            pattern = Regex(
+                """(?:零钱提现|提现)\s*(?:金额)?\s*[:：]?\s*(?:人民币)?\s*""" +
+                    """(?:(?:[-－]|[¥￥])\s*)?(\d[\d,]*(?:\.\d{1,2})?)\s*元?"""
+            ),
+            direction = Direction.EXPENSE,
             priority = 22,
         ),
 
-        // 信用卡还款通知
+        // 支付宝余额提现 → 支出。
+        // 与微信零钱提现是同一个场景，方向同样是「余额少了一笔」。
+        ParseRule(
+            id = "alipay_withdraw",
+            sourceKind = SourceKind.ALIPAY_NOTIFICATION,
+            sourceName = "支付宝",
+            packageNames = setOf(PKG_ALIPAY),
+            pattern = Regex(
+                """(?:余额提现|提现).{0,20}?(?:到账|成功|已完成)\s*[¥￥]?\s*(\d[\d,]*(?:\.\d{1,2})?)\s*元?"""
+            ),
+            direction = Direction.EXPENSE,
+            priority = 23,
+        ),
+
+        // 信用卡还款通知 → 支出（同上：钱离开你的账户）
         ParseRule(
             id = "generic_repayment_notification",
             sourceKind = SourceKind.OTHER_NOTIFICATION,
             sourceName = "其他",
             packageNames = emptySet(),
-            pattern = Regex("""(?:信用卡还款|自动还款|还款成功).*?[¥￥]?\s*([\d,]+\.?\d*)"""),
-            direction = Direction.NEUTRAL,
+            pattern = Regex("""(?:信用卡还款|自动还款|还款成功).*?(\d[\d,]*(?:\.\d{1,2})?)\s*元?"""),
+            direction = Direction.EXPENSE,
             priority = 22,
         ),
 

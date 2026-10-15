@@ -5,20 +5,46 @@ import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
 
-/** 资金流动方向 */
+/**
+ * 资金流动方向。
+ *
+ * ⚠️ **只有支出和收入两个方向，没有「中性」。**
+ *
+ * 曾经有过第三个值 `NEUTRAL`，用来表示「转账/还款/提现这类账户间转移，
+ * 方向不明确」。它被删掉了，原因是：
+ *
+ *   1. **统计上等于没记。** 首页的月度汇总只按 EXPENSE/INCOME 求和，
+ *      NEUTRAL 的记录金额是黑色无符号数字，既不进支出也不进收入 ——
+ *      用户提现 500 元，界面上看不出任何变化，只会以为「App 没记上」。
+ *   2. **它把「不知道」当成了答案。** 提现、还款这些场景其实方向是确定的
+ *      （零钱提现 = 零钱少了一笔 = 支出），标成 NEUTRAL 只是逃避判断。
+ *      方向说不清的真正解法是**去问用户**，而不是替他记一个模糊值
+ *      （见 [com.moneyflow.app.capture.TransferSignal] 的「待确认」流程）。
+ *
+ * 约定：**解析规则必须给出确定方向**。确实判断不了的场景，
+ * 负责任的做法是不记账并留档/待确认，而不是记一条方向不明的流水。
+ *
+ * ⚠️ 数据库里 `direction` 存的是枚举**名字字符串**（见 `Converters`）。
+ * 老版本写入的 `"NEUTRAL"` 行由 `AppDatabase.MIGRATION_3_4` 映射成
+ * EXPENSE / INCOME；若绕过迁移直接读到，[fromName] 会兜底成 EXPENSE。
+ */
 enum class Direction {
     /** 支出：钱从你手里出去 */
     EXPENSE,
 
     /** 收入：钱进到你手里 */
-    INCOME,
-
-    /** 中性：转账、还款等，方向不明确或双向对冲 */
-    NEUTRAL;
+    INCOME;
 
     companion object {
+        /**
+         * 把库里存的字符串转回枚举。
+         *
+         * 兜底成 [EXPENSE] 而不是抛异常：数据读不出来时，
+         * **让 App 能启动**比严格校验重要（转换器在 Room 初始化时就跑，
+         * 抛异常会让整个 App 起不来）。历史遗留的 `"NEUTRAL"` 也走这里。
+         */
         fun fromName(name: String): Direction =
-            entries.firstOrNull { it.name == name } ?: NEUTRAL
+            entries.firstOrNull { it.name == name } ?: EXPENSE
     }
 }
 
@@ -41,6 +67,15 @@ enum class SourceKind {
 
     /** 手动补录 */
     MANUAL,
+
+    /**
+     * 由「待确认转账」补录而来。
+     *
+     * 与 [MANUAL] 的区别值得单独记：这条记录**源于一条自动捕获的通知**，
+     * 只是金额由用户补上。将来若要统计「转账漏记有多少」，
+     * 靠这个值就能区分出来，而 MANUAL 会把手动和半自动混在一起。
+     */
+    PENDING_TRANSFER_CONFIRMED,
 
     /** CSV 账单导入（预留，P4 阶段启用） */
     CSV_IMPORT;

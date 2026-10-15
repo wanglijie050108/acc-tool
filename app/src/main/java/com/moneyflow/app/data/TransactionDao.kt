@@ -49,6 +49,59 @@ interface TransactionDao {
     fun observeCount(): Flow<Int>
 }
 
+/**
+ * 待确认转账的读写。
+ *
+ * 与流水表分开，因为它们的**生命周期完全不同**：
+ * 流水是最终数据，待确认是「用户还没处理的事件」，确认或忽略后就该消失。
+ */
+@Dao
+interface PendingTransferDao {
+
+    /** 首页顶部展示用：按检测时间倒序，最新的在最上面 */
+    @Query("SELECT * FROM pending_transfers ORDER BY detectedAt DESC, id DESC")
+    fun observeAll(): Flow<List<PendingTransferEntity>>
+
+    @Query("SELECT * FROM pending_transfers WHERE id = :id")
+    suspend fun findById(id: Long): PendingTransferEntity?
+
+    @Insert
+    suspend fun insert(entity: PendingTransferEntity): Long
+
+    @Query("DELETE FROM pending_transfers WHERE id = :id")
+    suspend fun deleteById(id: Long)
+
+    @Query("DELETE FROM pending_transfers")
+    suspend fun clear()
+
+    /**
+     * 去重查询：时间窗内是否已有相同去重键的待确认记录。
+     *
+     * 与 [TransactionDao.findDuplicate] 同样的思路 ——
+     * 键本身不含时间，时间维度靠范围查询，避免分桶边界导致去重失效。
+     */
+    @Query(
+        """
+        SELECT * FROM pending_transfers
+        WHERE dedupKey = :dedupKey
+          AND detectedAt BETWEEN :from AND :to
+        LIMIT 1
+        """
+    )
+    suspend fun findDuplicate(dedupKey: String, from: Long, to: Long): PendingTransferEntity?
+
+    /** 只保留最近 N 条，防止用户长期不处理导致无限堆积 */
+    @Query(
+        """
+        DELETE FROM pending_transfers
+        WHERE id NOT IN (
+            SELECT id FROM pending_transfers ORDER BY detectedAt DESC LIMIT :keep
+        )
+        """
+    )
+    suspend fun trimTo(keep: Int)
+}
+
 @Dao
 interface RawSampleDao {
 

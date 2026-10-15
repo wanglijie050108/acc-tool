@@ -86,11 +86,11 @@ class CustomRuleTest {
         // 用户认为这条规则判断错了，加一条覆盖它
         ParseEngine.setCustomRules(
             parse(
-                ruleJson(pattern = """支出人民币([\d,]+\.?\d*)元""", direction = "NEUTRAL", priority = 99)
+                ruleJson(pattern = """支出人民币([\d,]+\.?\d*)元""", direction = "INCOME", priority = 99)
             )
         )
         val after = ParseEngine.parse(text, null, 0L) as ParseResult.Success
-        assertEquals("自定义规则应覆盖内置规则的方向判断", Direction.NEUTRAL, after.direction)
+        assertEquals("自定义规则应覆盖内置规则的方向判断", Direction.INCOME, after.direction)
     }
 
     @Test
@@ -180,12 +180,13 @@ class CustomRuleTest {
     }
 
     @Test
-    fun unknownDirectionFallsBackToNeutral() {
+    fun unknownDirectionFallsBackToExpense() {
         val rules = parse(
             ruleJson(pattern = """支出([\d.]+)""", direction = "NOT_A_REAL_DIRECTION")
         )
         assertEquals(1, rules.size)
-        assertEquals(Direction.NEUTRAL, rules[0].direction)
+        // 方向只允许支出/收入，认不出的字符串兜底成支出（与 Direction.fromName 一致）
+        assertEquals(Direction.EXPENSE, rules[0].direction)
     }
 
     // ─────────── smsOnly 通道隔离 ───────────

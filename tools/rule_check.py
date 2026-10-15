@@ -9,12 +9,12 @@ UNIONPAY = "com.unionpay"
 
 # (id, pkg_filter, pattern, amount_group, direction, priority, merchant_group)
 rules = [
-    ("wechat_receive", {WECHAT}, r"(?:收款|到账|收到).*?[¥￥]?\s*([\d,]+\.?\d*)", 1, "INCOME", 20, None),
+    ("wechat_receive", {WECHAT}, r"(?:收款到账|收款成功|已收款|收款通知|收到转账|收到一笔|收到红包|到账)\s*(?:通知|提醒)?\s*[:：]?\s*[¥￥]?\s*([\d,]+\.?\d*)", 1, "INCOME", 20, None),
     ("wechat_pay_merchant", {WECHAT}, r"向\s*(.{1,20}?)\s*(?:付款|支付)\s*[¥￥]?\s*([\d,]+\.?\d*)", 2, "EXPENSE", 15, 1),
     ("wechat_pay_generic", {WECHAT}, r"微信支付.*?[-－]\s*[¥￥]?\s*([\d,]+\.?\d*)", 1, "EXPENSE", 10, None),
     ("alipay_pay", {ALIPAY}, r"(?:成功付款|支付成功|付款成功)\s*[¥￥]?\s*([\d,]+\.?\d*)", 1, "EXPENSE", 15, None),
     ("alipay_pay_merchant", {ALIPAY}, r"(?:向|在)\s*(.{1,20}?)\s*(?:付款|支付|消费)\s*[¥￥]?\s*([\d,]+\.?\d*)", 2, "EXPENSE", 14, 1),
-    ("alipay_receive", {ALIPAY}, r"(?:收款|到账|收到).*?[¥￥]?\s*([\d,]+\.?\d*)", 1, "INCOME", 20, None),
+    ("alipay_receive", {ALIPAY}, r"(?:收款到账|收款成功|已收款|收款通知|收到转账|收到一笔|收到红包|到账)\s*(?:通知|提醒)?\s*[:：]?\s*[¥￥]?\s*([\d,]+\.?\d*)", 1, "INCOME", 20, None),
     ("alipay_generic_expense", {ALIPAY}, r"支付宝.*?[-－]\s*[¥￥]?\s*([\d,]+\.?\d*)", 1, "EXPENSE", 5, None),
     ("unionpay_pay", {UNIONPAY}, r"(?:消费|支出|付款|交易).*?[¥￥]?\s*([\d,]+\.?\d*)", 1, "EXPENSE", 10, None),
     ("sms_expense", set(), r"(?:支出|消费|付款|转出|扣款|取现)人民币\s*([\d,]+\.?\d*)\s*元", 1, "EXPENSE", 30, None),
@@ -23,7 +23,8 @@ rules = [
     ("sms_income_plain", set(), r"(?:收入|转入|存入|到账|退款)\s*(?:金额)?\s*[¥￥]?\s*([\d,]+\.?\d*)\s*元", 1, "INCOME", 20, None),
     ("sms_repayment", set(), r"(?:还款|已还|偿还)\s*(?:金额)?\s*(?:人民币)?\s*[¥￥]?\s*([\d,]+\.?\d*)\s*元", 1, "NEUTRAL", 25, None),
     ("sms_transfer_neutral", set(), r"(?:提现|充值|转存|转账)\s*(?:金额)?\s*(?:人民币)?\s*[¥￥]?\s*([\d,]+\.?\d*)\s*元", 1, "NEUTRAL", 22, None),
-    ("wechat_withdraw", {WECHAT}, r"(?:零钱提现|提现).*?[¥￥]?\s*([\d,]+\.?\d*)", 1, "NEUTRAL", 22, None),
+    ("wechat_withdraw_settled", {WECHAT}, r"(?:零钱提现|提现).{0,30}?到账\s*[¥￥]?\s*([\d,]+\.?\d*)\s*元?", 1, "NEUTRAL", 23, None),
+    ("wechat_withdraw", {WECHAT}, r"(?:零钱提现|提现)\s*(?:金额)?\s*[:：]?\s*(?:人民币)?\s*(?:(?:[-－]|[¥￥])\s*)?([\d,]+\.?\d*)\s*元?", 1, "NEUTRAL", 22, None),
     ("generic_repayment_notification", set(), r"(?:信用卡还款|自动还款|还款成功).*?[¥￥]?\s*([\d,]+\.?\d*)", 1, "NEUTRAL", 22, None),
     ("fallback_expense", set(), r"(?:支付|付款|消费|扣款|支出).*?[¥￥]\s*([\d,]+\.?\d*)", 1, "EXPENSE", -10, None),
 ]
@@ -77,6 +78,17 @@ cases = [
     ("微信-全角减号", WECHAT, "微信支付－¥66.00", "EXPENSE", 66.0),
     ("无关通知", WECHAT, "张三 发来一条消息", None, None),
     ("银行营销短信", None, "【招商银行】您的信用卡账单已生成，请及时查看", None, None),
+
+    # 微信「收款方」是**支出**语义（指商家），绝不能被判成收入。
+    # 这是真机复现过的方向记反 bug：旧规则用裸「收款」命中了「收款方」。
+    ("微信-收款方是支出", WECHAT, "微信支付 收款方：星巴克 ¥38.50", "EXPENSE", 38.50),
+    ("微信-收款方变体", WECHAT, "微信支付 收款方 美团外卖 ¥25.00", "EXPENSE", 25.00),
+    # 修复后真正的入账写法仍必须识别为收入
+    ("微信-已收款", WECHAT, "微信支付 已收款 ¥50.00", "INCOME", 50.00),
+    ("微信-收到转账", WECHAT, "微信支付 收到转账 ¥20.00", "INCOME", 20.00),
+    ("微信-到账", WECHAT, "微信支付 到账 ¥100.00", "INCOME", 100.00),
+    # 提现不能被手续费/订单号骗走金额
+    ("微信-提现带手续费", WECHAT, "微信支付 零钱提现 手续费 0.10 元 到账 500.00 元", "NEUTRAL", 500.00),
 
     # ── 边界情况：这些是真实使用中最容易出错的 ──
 

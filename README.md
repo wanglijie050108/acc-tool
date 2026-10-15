@@ -28,7 +28,7 @@ Android 本地自动记账工具。自动读取微信/支付宝/银行的通知�
 |---|---|---|
 | 编译通过 | ✅ | `clean assembleDebug assembleRelease` BUILD SUCCESSFUL，0 warning |
 | 产出可安装 APK | ✅ | release 10.0 MB，apksigner 验证签名有效 |
-| JVM 单元测试 | ✅ | **128 个用例通过**（`gradlew testDebugUnitTest`） |
+| JVM 单元测试 | ✅ | **133 个用例通过**（`gradlew testDebugUnitTest`） |
 | 数据库/导入/迁移测试 | ✅ | **26 个用例通过**，跑在真实 Android 14 上 |
 | 真实银行短信覆盖率 | ✅ | **19/19**（10 家银行的真实模板） |
 | **自定义规则端到端** | ✅ | 真机验证：内置规则认不出的通知，用自定义规则成功记账 |
@@ -146,6 +146,21 @@ python tools/real_sms_check.py
    修复：加 60 秒看门狗主动重绑 + 设置页如实告知「把开关关掉再打开」这一唯一有效操作。
    详见 **[docs/真机验收记录.md](docs/真机验收记录.md)**。
 
+9. **付款被记成收入（方向记反，统计彻底反向）**（2026-10-14 测试发现）：
+   微信的**付款**通知里会写「**收款方**：星巴克 ¥38.50」——「收款方」是个名词（指商家），
+   整句语义是**支出**。但原 `wechat_receive` 规则用的是裸的「收款」二字：
+   ```kotlin
+   Regex("""(?:收款|到账|收到).*?[¥￥]?\s*([\d,]+\.?\d*)""")   // 旧的坏规则
+   ```
+   它命中「收款方」，而这条规则优先级(20) **高于** `wechat_pay_merchant`(15)，
+   于是**一笔支出被记成了收入**。同样的坑在支付宝规则里也有一份。
+   修复：income 规则只保留**能确定是资金入账**的写法
+   （`收款到账 / 已收款 / 收到转账 / 到账` …），并去掉危险的 `.*?` 跨字段抓数字。
+   回归测试：`wechatPayeeLabelIsNotMistakenForIncome`、
+   `wechatPayeeLabelVariantsStayExpense`、`realIncomePhrasingsStillWork`。
+   > 同类问题（`.*?` 把「手续费」「订单号」当金额）也一并修了：
+   > `wechat_withdraw_settled`，回归测试 `withdrawDoesNotCaptureFeeOrOrderNumber`。
+
 ### 两个绕不过去的限制（真机验收发现，务必先读）
 
 这两条不是 bug，是数据源本身的性质。写在这里是因为它们会直接决定
@@ -196,7 +211,7 @@ Android 会冻结后台进程，此时**授权仍显示已开启，但收不到�
 
 详见 [docs/真机验收记录.md](docs/真机验收记录.md) 问题 1。
 
-> ⚠️ 诚实说明：编译、128 个 JVM 用例、26 个数据库用例、真实银行短信 19/19
+> ⚠️ 诚实说明：编译、133 个 JVM 用例、26 个数据库用例、真实银行短信 19/19
 > 都已真实跑通，并且已经在**真机（REDMI K80 / Android 15）**上端到端验证过
 > 「解析 → 记账 → 去重 → 入库」。
 >
@@ -337,16 +352,31 @@ bash tools/run_engine_test.sh
 
 | 组件 | 路径 |
 |---|---|
-| JDK 17 (Temurin) | `C:\Users\24996\jdk17\jdk-17.0.20.1+1` |
+| JDK 17 (Temurin) | `C:\Users\24996\jdk17\jdk-17.0.20.1+1`（含 `javac`，能编译） |
 | Android SDK | `C:\Android\Sdk`（含 platform 34、build-tools 34.0.0） |
 | `local.properties` | 指向 `C:\Android\Sdk`，已写入 |
 
-编译命令（bash）：
+### 一键打包并装到手机（推荐）
 
 ```bash
-export JAVA_HOME="/c/Users/24996/jdk17/jdk-17.0.20.1+1"
+bash tools/build_and_install.sh
+```
+
+编译 → 验签 → 同步交付物 → `adb install` → **把手机上的包拉回来比哈希**，
+每步都有断言。参数：`--no-install` / `--debug` / `--clean`。
+
+> ⚠️ 这条链路上有 6 个「不报错但会做错事」的坑（`JAVA_HOME` 路径形式、
+> MSYS 路径改写、**adb 输出是 CRLF 导致 grep 静默失配**、`adb shell` 二次解析、
+> 交付物残留旧版、缓存导致装了旧包），全部记在
+> **[docs/打包与安装.md](docs/打包与安装.md)**。手工敲命令前请先读那份。
+
+手工编译（bash）：
+
+```bash
+export JAVA_HOME='C:\Users\24996\jdk17\jdk-17.0.20.1+1'   # 注意用 Windows 形式
 export ANDROID_HOME=/c/Android/Sdk
-./gradlew assembleRelease
+export MSYS_NO_PATHCONV=1                                  # 否则 adb 的路径会被改写
+./gradlew clean assembleRelease
 ```
 
 ---

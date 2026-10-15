@@ -5,11 +5,13 @@ import android.content.ComponentName
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import com.moneyflow.app.data.PendingTransferEntity
 import com.moneyflow.app.data.SampleRecorder
 import com.moneyflow.app.data.TransactionRepository
 import com.moneyflow.app.parse.MoneyText
 import com.moneyflow.app.parse.ParseEngine
 import com.moneyflow.app.parse.ParseResult
+import com.moneyflow.app.parse.TransferSignal
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -127,11 +129,22 @@ class NotificationCaptureService : NotificationListenerService() {
             }
 
             is ParseResult.NoAmount -> {
-                // 绝大多数通知都不含金额，这是正常情况，不打日志避免刷屏。
-                // 但「看起来像钱、却没识别出来」的通知必须留档 ——
-                // 这些正是需要补规则的样本，用户平时根本不会主动报告。
-                // 统一走 MoneyText：验证码类内容不会被留档
-                if (MoneyText.looksMoneyRelated(rawText)) {
+                // 先判断是不是「转账通知」。
+                //
+                // 顺序很重要：转账通知也满足 MoneyText.looksMoneyRelated
+                // （含「转账」二字），如果先走留档分支，它会被记成
+                // 一条 [UNMATCHED] 样本 —— 而这类通知**永远不可能**被规则匹配，
+                // 因为通知里根本没有金额。让用户把它们当「待补规则的样本」
+                // 导出发给我，只会污染样本、误导排查方向。
+                //
+                // 所以两者互斥：是转账就走转账通道，否则才考虑留档。
+                val verdict = TransferSignal.detect(rawText, packageName)
+                if (verdict is TransferSignal.Verdict.Transfer) {
+                    maybeCaptureTransfer(rawText, packageName, occurredAt, verdict)
+                } else if (MoneyText.looksMoneyRelated(rawText)) {
+                    // 「看起来像钱、却没识别出来」的通知必须留档 ——
+                    // 这些正是需要补规则的样本，用户平时根本不会主动报告。
+                    // 统一走 MoneyText：验证码类内容不会被留档
                     SampleRecorder.record(
                         context = applicationContext,
                         packageName = packageName,
@@ -146,6 +159,63 @@ class NotificationCaptureService : NotificationListenerService() {
 
             is ParseResult.Failure -> {
                 Log.w(TAG, "解析失败：${result.reason}")
+            }
+        }
+    }
+
+    /**
+     * 把一条「没有金额的转账通知」挂起成待确认。
+     *
+     * 背景：微信/支付宝给好友转账后，通知栏那条消息**不含金额**
+     * （真机确认，原文形如「[转账]已被接收」），金额只在 App 内部的账单页里。
+     * 所以这类通知注定过不了 [ParseEngine]，但也不能丢 ——
+     * 丢了用户就永远不知道自己漏了一笔。
+     *
+     * ⚠️ 必须极其克制：用户每天收到几十条无金额通知，
+     * 判定放宽一点就会变成骚扰。[TransferSignal] 负责严格判定，
+     * 这里只负责落库和发提醒。
+     */
+    private fun maybeCaptureTransfer(
+        rawText: String,
+        packageName: String?,
+        occurredAt: Long,
+        verdict: TransferSignal.Verdict.Transfer,
+    ) {
+        val repository = TransactionRepository.get(applicationContext)
+        scope.launch {
+            try {
+                val sourceName = when (packageName) {
+                    "com.tencent.mm" -> "微信转账"
+                    "com.eg.android.AlipayGphone" -> "支付宝转账"
+                    else -> "转账"
+                }
+
+                val pending = PendingTransferEntity(
+                    packageName = packageName,
+                    sourceName = sourceName,
+                    rawText = rawText,
+                    detectedAt = occurredAt,
+                    direction = verdict.direction,
+                    dedupKey = PendingTransferEntity.dedupKeyOf(packageName, rawText),
+                )
+
+                val added = repository.addPendingTransfer(pending)
+                if (!added) {
+                    Log.i(TAG, "转账提醒重复，跳过：$rawText")
+                    return@launch
+                }
+
+                // 重新查一次拿到自增 id，通知要用它做跳转参数
+                val saved = repository.findPendingTransferByDedupKey(
+                    pending.dedupKey,
+                    occurredAt,
+                ) ?: return@launch
+
+                TransferPrompt.show(applicationContext, saved)
+                Log.i(TAG, "已挂起待确认转账（id=${saved.id}）：$rawText")
+            } catch (t: Throwable) {
+                // 挂起失败不能影响其他通知的处理
+                Log.e(TAG, "挂起待确认转账失败", t)
             }
         }
     }

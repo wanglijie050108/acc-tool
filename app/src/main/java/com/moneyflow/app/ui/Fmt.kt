@@ -20,13 +20,12 @@ object Fmt {
 
     /**
      * 带符号的金额，用于流水列表。
-     * 支出前面加「-」，收入加「+」，中性不带符号。
+     * 支出前面加「-」，收入加「+」。
      */
     fun signedAmount(value: Double, direction: com.moneyflow.app.data.Direction): String =
         when (direction) {
             com.moneyflow.app.data.Direction.EXPENSE -> "-${amount(value)}"
             com.moneyflow.app.data.Direction.INCOME -> "+${amount(value)}"
-            com.moneyflow.app.data.Direction.NEUTRAL -> amount(value)
         }
 
     /** 判断两个时间戳是否是同一天，用于列表分组 */

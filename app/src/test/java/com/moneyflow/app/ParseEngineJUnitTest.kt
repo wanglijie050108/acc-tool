@@ -69,8 +69,84 @@ class ParseEngineJUnitTest {
         assertParsed("微信支付\u3000向\u3000滴滴出行\u3000付款\u3000¥18.50", "com.tencent.mm", 18.5, Direction.EXPENSE)
 
     @Test
-    fun wechatWithdrawIsNeutral() =
-        assertParsed("微信支付 零钱提现 ¥500.00", "com.tencent.mm", 500.0, Direction.NEUTRAL)
+    fun wechatWithdrawIsExpense() =
+        // 零钱提现 = 零钱账户少了一笔 = 支出（曾经记成「中性」，统计上等于没记）
+        assertParsed("微信支付 零钱提现 ¥500.00", "com.tencent.mm", 500.0, Direction.EXPENSE)
+
+    // ── 回归：不要把「收款方」当成收入（真机复现过的方向记反 bug）──
+    //
+    // 旧的 wechat_receive 规则是 `(?:收款|到账|收到).*?([\d,]+\.?\d*)`。
+    // 微信的**付款**通知里会写「收款方：星巴克 ¥38.50」——
+    // 「收款方」是名词（指商家），整句语义是**支出**。
+    // 但裸「收款」命中它，且该规则优先级(20)高于 wechat_pay_merchant(15)，
+    // 于是这笔支出被记成了**收入**，统计彻底反向。
+    //
+    // 这条测试守住修复：付款语义的通知绝不能被判成收入。
+
+    @Test
+    fun wechatPayeeLabelIsNotMistakenForIncome() {
+        val r = parse("微信支付 收款方：星巴克 ¥38.50", "com.tencent.mm")
+        assertTrue("「收款方」是支出语义，不能记成收入，实际=$r", r is ParseResult.Success)
+        r as ParseResult.Success
+        assertEquals("金额应为 38.50", 38.5, r.amount, 0.001)
+        assertEquals("「收款方」必须判为支出", Direction.EXPENSE, r.direction)
+    }
+
+    @Test
+    fun wechatPayeeLabelVariantsStayExpense() {
+        // 各种带「收款方/收款账户」字样的付款通知，都必须是支出
+        val cases = listOf(
+            "微信支付 收款方：星巴克 ¥38.50",
+            "微信支付 收款方 美团外卖 ¥25.00",
+            "微信支付 收款账户：某某商户 ¥12.00",
+        )
+        for (text in cases) {
+            val r = parse(text, "com.tencent.mm")
+            assertTrue("应识别成功，文本=$text 实际=$r", r is ParseResult.Success)
+            r as ParseResult.Success
+            assertEquals("「收款方」类文本必须判为支出，文本=$text", Direction.EXPENSE, r.direction)
+        }
+    }
+
+    @Test
+    fun alipayPayeeLabelIsNotMistakenForIncome() {
+        // 支付宝同样有「收款方」字样，同样的坑
+        val r = parse("支付宝 收款方：某某商家 ¥30.00", "com.eg.android.AlipayGphone")
+        if (r is ParseResult.Success) {
+            assertEquals("「收款方」必须判为支出", Direction.EXPENSE, r.direction)
+        }
+    }
+
+    @Test
+    fun realIncomePhrasingsStillWork() {
+        // 修复不能把真正的收入也堵死 —— 这些是真实的入账写法
+        val cases = listOf(
+            "微信支付 收款到账 ¥88.88" to 88.88,
+            "微信支付 已收款 ¥50.00" to 50.0,
+            "微信支付 收到转账 ¥20.00" to 20.0,
+            "微信支付 到账 ¥100.00" to 100.0,
+        )
+        for ((text, amount) in cases) {
+            val r = parse(text, "com.tencent.mm")
+            assertTrue("真实入账应识别成功，文本=$text 实际=$r", r is ParseResult.Success)
+            r as ParseResult.Success
+            assertEquals("金额不符，文本=$text", amount, r.amount, 0.001)
+            assertEquals("应判为收入，文本=$text", Direction.INCOME, r.direction)
+        }
+    }
+
+    // ── 回归：金额必须紧跟动词，不能被手续费/订单号骗走 ──
+
+    @Test
+    fun withdrawDoesNotCaptureFeeOrOrderNumber() {
+        // 提现通知里常先出现「手续费 0.10 元」，再是「到账 500.00 元」。
+        // 旧规则用 .*? 会把手续费当成提现金额（金额错成 0.10）。
+        val r = parse("微信支付 零钱提现 手续费 0.10 元 到账 500.00 元", "com.tencent.mm")
+        assertTrue("应识别成功，实际=$r", r is ParseResult.Success)
+        r as ParseResult.Success
+        assertEquals("必须取到账金额 500.00，而不是手续费 0.10", 500.0, r.amount, 0.001)
+        assertEquals("提现是钱离开本账户，方向应为支出", Direction.EXPENSE, r.direction)
+    }
 
     // ── 支付宝 ──
 
@@ -104,12 +180,13 @@ class ParseEngineJUnitTest {
         assertParsed("您尾号5678账户10月14日收入人民币5000.00元，余额8000.00元", null, 5000.0, Direction.INCOME)
 
     @Test
-    fun smsRepaymentIsNeutral() =
-        assertParsed("您尾号1234账户还款人民币3000.00元", null, 3000.0, Direction.NEUTRAL)
+    fun smsRepaymentIsExpense() =
+        // 还款 = 钱离开本账户去还信用卡 = 支出
+        assertParsed("您尾号1234账户还款人民币3000.00元", null, 3000.0, Direction.EXPENSE)
 
     @Test
-    fun smsWithdrawIsNeutral() =
-        assertParsed("您尾号1234账户提现人民币500.00元", null, 500.0, Direction.NEUTRAL)
+    fun smsWithdrawIsExpense() =
+        assertParsed("您尾号1234账户提现人民币500.00元", null, 500.0, Direction.EXPENSE)
 
     @Test
     fun smsTransferIn() =

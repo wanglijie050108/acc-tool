@@ -144,6 +144,43 @@ fun SettingsScreen(
             Spacer(Modifier.height(24.dp))
 
             Text(
+                text = "关于朋友间转账",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                ),
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "转账通知里没有金额，这是正常的",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "微信/支付宝给好友转账后，通知栏那条消息" +
+                            "原文只有「[转账]已被接收」，不含金额 —— " +
+                            "金额只在 App 内部的账单页里，通知拿不到。\n\n" +
+                            "所以本应用会给这类转账发一条提醒，让你补个金额。" +
+                            "补录弹窗会自动聚焦金额框，输完点「记账」即可，约 3 秒。\n\n" +
+                            "待确认的记录存在本地数据库，App 被系统杀掉也不会丢。",
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(24.dp))
+
+            Text(
                 text = "工具",
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Medium,

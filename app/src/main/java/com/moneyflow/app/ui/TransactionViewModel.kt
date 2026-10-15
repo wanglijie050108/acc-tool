@@ -3,8 +3,10 @@ package com.moneyflow.app.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.moneyflow.app.capture.TransferPrompt
 import com.moneyflow.app.data.AppDatabase
 import com.moneyflow.app.data.Direction
+import com.moneyflow.app.data.PendingTransferEntity
 import com.moneyflow.app.data.RawSampleEntity
 import com.moneyflow.app.data.SourceKind
 import com.moneyflow.app.data.TransactionEntity
@@ -97,6 +99,91 @@ class TransactionViewModel(application: Application) : AndroidViewModel(applicat
     fun delete(entity: TransactionEntity) {
         viewModelScope.launch {
             repository.delete(entity)
+        }
+    }
+
+    // ─────────────── 待确认转账 ───────────────
+
+    /** 首页顶部展示的待确认转账，最新在前 */
+    val pendingTransfers: StateFlow<List<PendingTransferEntity>> =
+        repository.observePendingTransfers()
+            .stateIn(
+                scope = viewModelScope,
+                started = SharingStarted.WhileSubscribed(5_000),
+                initialValue = emptyList(),
+            )
+
+    /**
+     * 正在补金额的那条待确认转账。null 表示没有打开补录弹窗。
+     *
+     * 与 [editing]/[creating] 并列：这三者互斥，都决定「有没有弹窗、弹哪个」。
+     */
+    private val _pendingToConfirm = MutableStateFlow<PendingTransferEntity?>(null)
+    val pendingToConfirm: StateFlow<PendingTransferEntity?> = _pendingToConfirm.asStateFlow()
+
+    /** 用户点了首页卡片或通知，打开补金额弹窗 */
+    fun openPendingConfirm(pending: PendingTransferEntity) {
+        _editing.value = null
+        _creating.value = false
+        _pendingToConfirm.value = pending
+    }
+
+    /** 从通知点击进入时，按 id 查找并打开 */
+    fun openPendingConfirmById(id: Long) {
+        viewModelScope.launch {
+            val pending = repository.findPendingTransfer(id) ?: return@launch
+            openPendingConfirm(pending)
+        }
+    }
+
+    fun closePendingConfirm() {
+        _pendingToConfirm.value = null
+    }
+
+    /**
+     * 补完金额，把待确认变成正式流水。
+     *
+     * 成功后撤掉系统通知 —— 否则用户点进 App 记完了，
+     * 通知栏还挂着「检测到一笔转账」，会以为没记上。
+     */
+    fun confirmPendingTransfer(
+        pendingId: Long,
+        amountText: String,
+        direction: Direction,
+        merchant: String,
+        note: String,
+    ) {
+        val amount = amountText.replace(",", "").trim().toDoubleOrNull() ?: return
+        if (amount <= 0.0) return
+
+        val context = getApplication<Application>()
+        viewModelScope.launch {
+            try {
+                repository.confirmPendingTransfer(
+                    pendingId = pendingId,
+                    amount = amount,
+                    direction = direction,
+                    merchant = merchant.ifBlank { null },
+                    note = note.ifBlank { null },
+                )
+                TransferPrompt.cancel(context, pendingId)
+            } finally {
+                closePendingConfirm()
+            }
+        }
+    }
+
+    /** 用户判断这不是一笔转账（或不想记），直接消掉 */
+    fun dismissPendingTransfer(pendingId: Long) {
+        val context = getApplication<Application>()
+        viewModelScope.launch {
+            try {
+                repository.dismissPendingTransfer(pendingId)
+                TransferPrompt.cancel(context, pendingId)
+            } finally {
+                // 如果忽略的正是当前打开的那条，顺手关掉弹窗
+                if (_pendingToConfirm.value?.id == pendingId) closePendingConfirm()
+            }
         }
     }
 

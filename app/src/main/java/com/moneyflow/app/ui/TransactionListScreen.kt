@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -30,6 +31,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -43,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.moneyflow.app.data.Direction
+import com.moneyflow.app.data.PendingTransferEntity
 import com.moneyflow.app.data.TransactionEntity
 import java.util.Calendar
 
@@ -55,6 +58,8 @@ fun TransactionListScreen(
     val transactions by viewModel.transactions.collectAsStateWithLifecycle()
     val editing by viewModel.editing.collectAsStateWithLifecycle()
     val creating by viewModel.creating.collectAsStateWithLifecycle()
+    val pendingTransfers by viewModel.pendingTransfers.collectAsStateWithLifecycle()
+    val pendingToConfirm by viewModel.pendingToConfirm.collectAsStateWithLifecycle()
 
     Scaffold(
         topBar = {
@@ -83,6 +88,18 @@ fun TransactionListScreen(
                 .background(MaterialTheme.colorScheme.background),
         ) {
             MonthSummary(transactions)
+
+            // 待确认转账放在月度汇总下面、流水列表上面。
+            // 位置很讲究：太靠上会打断用户看账，太靠下用户根本不会滚到。
+            // 放这里既能被看到，又不抢占主视图。
+            if (pendingTransfers.isNotEmpty()) {
+                PendingTransferCard(
+                    pendingCount = pendingTransfers.size,
+                    first = pendingTransfers.first(),
+                    onConfirmFirst = { viewModel.openPendingConfirm(pendingTransfers.first()) },
+                    onDismissFirst = { viewModel.dismissPendingTransfer(pendingTransfers.first().id) },
+                )
+            }
 
             if (transactions.isEmpty()) {
                 EmptyState()
@@ -123,6 +140,97 @@ fun TransactionListScreen(
                 viewModel.closeEditor()
             },
         )
+    }
+
+    pendingToConfirm?.let { pending ->
+        PendingTransferDialog(
+            pending = pending,
+            onDismiss = { viewModel.closePendingConfirm() },
+            onConfirm = { id, amount, direction, merchant, note ->
+                viewModel.confirmPendingTransfer(id, amount, direction, merchant, note)
+            },
+            onIgnore = { id -> viewModel.dismissPendingTransfer(id) },
+        )
+    }
+}
+
+/**
+ * 首页的「待确认转账」提示条。
+ *
+ * 只显示**最新一条**，而不是把所有待确认都列出来 ——
+ * 首页的空间该留给流水，而且大多数时候只会有一条待确认。
+ * 但如果多于一条，文案里要说清楚总数，否则用户处理完这条
+ * 会发现还有，容易困惑。
+ */
+@Composable
+private fun PendingTransferCard(
+    pendingCount: Int,
+    first: PendingTransferEntity,
+    onConfirmFirst: () -> Unit,
+    onDismissFirst: () -> Unit,
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        colors = CardDefaults.cardColors(
+            // 用 tertiary 之类的强调色而不是 error 红：
+            // 这不是错误，只是「待你确认」，不该让用户紧张。
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+        ),
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "待确认转账",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                )
+                if (pendingCount > 1) {
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = "共 $pendingCount 笔",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(4.dp))
+
+            Text(
+                text = "${first.sourceName} · 通知里没有金额，需要你补一下",
+                fontSize = 12.sp,
+                lineHeight = 17.sp,
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+            )
+
+            Spacer(Modifier.height(2.dp))
+
+            Text(
+                text = first.rawText,
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.75f),
+                maxLines = 2,
+            )
+
+            Spacer(Modifier.height(10.dp))
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Button(onClick = onConfirmFirst) { Text("补金额") }
+                TextButton(onClick = onDismissFirst) {
+                    Text(
+                        text = "不是转账",
+                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -235,7 +343,6 @@ private fun TransactionRow(
     val amountColor = when (entity.direction) {
         Direction.EXPENSE -> Color(0xFFD9534F)
         Direction.INCOME -> Color(0xFF2E7D52)
-        Direction.NEUTRAL -> MaterialTheme.colorScheme.onSurface
     }
 
     Card(
