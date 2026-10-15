@@ -107,6 +107,24 @@ bash tools/build_and_install.sh    # only when installing to a phone
 If a number **drops**, you broke something — the baseline is the contract.
 If a number **rises**, update this table and the README in the same sit.
 
+### What is verified, and what is not (be honest)
+
+| Claim | Status |
+|---|---|
+| Prompt *logic* (when/what to prompt) | ✅ 11 unit tests |
+| *Wiring* (startup + 3 buttons actually call it) | ✅ structural check + mutation tested |
+| App starts on a real phone without crashing after the change | ✅ REDMI K80 / Android 15, `MainActivity` focused, no `FATAL`, `KeepAliveService` up |
+| Anti-nag works (already-granted ⇒ no prompt) | ✅ observed live: all runtime perms granted ⇒ no dialog on launch |
+| **The system dialog actually appears to the user** | ⏸ **not verified on-device** |
+
+The last row is a real gap, and the reason is a platform restriction: **`adb shell pm
+revoke` is refused on HyperOS** (`SecurityException: REVOKE_RUNTIME_PERMISSIONS`), so
+there is no way to put the device back into the "not yet granted" state from adb —
+and that state is the only one in which the dialog appears. Do **not** read
+"I can't trigger it" as "it isn't implemented". To see it, the user must do it by hand:
+
+> 设置 → 应用管理 → 流水记账 → 权限 → 把「短信」关掉 → 再打开 App → 应当看到系统弹窗
+
 ## 5. How the regression is now guarded (and why both layers exist)
 
 Unit tests alone are **not** enough here, and this is the subtle part:
