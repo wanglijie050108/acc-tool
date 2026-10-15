@@ -129,7 +129,7 @@ fun SettingsScreen(
             PermissionCard(
                 title = "2. 短信权限（推荐）",
                 description = "读取银行扣款短信。银行短信格式最规范，识别最准，" +
-                    "能与通知互相补漏。\n\n点下面的按钮会**直接弹出系统授权框**，" +
+                    "能与通知互相补漏。\n\n点下面的按钮会直接弹出系统授权框，" +
                     "点「允许」即可，不用自己去设置里找。",
                 granted = smsGranted,
                 buttonText = if (smsGranted) "已开启" else "点这里授权",
