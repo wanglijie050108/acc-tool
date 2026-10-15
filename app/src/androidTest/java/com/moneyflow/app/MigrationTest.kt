@@ -84,7 +84,7 @@ class MigrationTest {
                     )
                 }
 
-                override fun onUpgrade(db: SupportSQLiteDatabase, old: Int, new: Int) = Unit
+                override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
             })
             .build()
 
@@ -102,10 +102,19 @@ class MigrationTest {
         helper.close()
     }
 
-    /** 用真实 Room 打开 v1 库，触发迁移一路升到最新版 */
+    /**
+     * 用真实 Room 打开旧库，触发迁移一路升到最新版。
+     *
+     * ⚠️ **每加一个迁移都必须登记到这里**，否则测试跑的是一条
+     * 与线上不同的升级路径 —— 迁移本身没人验证，用户升级时才炸。
+     */
     private fun openWithMigration(): AppDatabase =
         Room.databaseBuilder(context, AppDatabase::class.java, dbName)
-            .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3)
+            .addMigrations(
+                AppDatabase.MIGRATION_1_2,
+                AppDatabase.MIGRATION_2_3,
+                AppDatabase.MIGRATION_3_4,
+            )
             .allowMainThreadQueries()
             .build()
 
@@ -236,7 +245,7 @@ class MigrationTest {
                     )
                 }
 
-                override fun onUpgrade(db: SupportSQLiteDatabase, old: Int, new: Int) = Unit
+                override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
             })
             .build()
 
@@ -327,6 +336,228 @@ class MigrationTest {
             assertTrue(
                 dao.findDuplicate(key, 1_700_000_000_000L + 900_000, 1_700_000_000_000L + 901_000) == null
             )
+        } finally {
+            db.close()
+        }
+    }
+
+    // ─────────────── v3 → v4：删掉「中性」方向 ───────────────
+
+    /**
+     * v3 时代的库：transactions 表里存着老版本写入的 `'NEUTRAL'` 行。
+     *
+     * ⚠️ 这是**真实会发生在用户手机上**的状态 —— 老版本把提现、还款、
+     * 信用卡还款都记成 NEUTRAL。新版本枚举里已经没有这个值了，
+     * 如果不迁移，这些行会被 [Direction.fromName] 兜底成 EXPENSE，
+     * 「信用卡还款 3000」就静默变成一笔支出，用户根本不会发现。
+     *
+     * @param rows (金额, 方向字符串, 原文)，原文可为 null（手动补录没有原文）
+     */
+    private fun createV3DatabaseWithDirections(rows: List<Triple<Double, String, String?>>) {
+        context.deleteDatabase(dbName)
+        val config = SupportSQLiteOpenHelper.Configuration.builder(context)
+            .name(dbName)
+            .callback(object : SupportSQLiteOpenHelper.Callback(3) {
+                override fun onCreate(db: SupportSQLiteDatabase) {
+                    db.execSQL(v1TransactionTable)
+                    db.execSQL(
+                        "CREATE INDEX IF NOT EXISTS index_transactions_occurredAt " +
+                            "ON transactions (occurredAt)"
+                    )
+                    db.execSQL(
+                        "CREATE INDEX IF NOT EXISTS index_transactions_fingerprint " +
+                            "ON transactions (fingerprint)"
+                    )
+                    // v3 已有的另外两张表（迁移不碰它们，但 Room 校验 schema 需要存在）
+                    db.execSQL(
+                        """
+                        CREATE TABLE IF NOT EXISTS `raw_samples` (
+                            `id` INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                            `packageName` TEXT,
+                            `title` TEXT,
+                            `text` TEXT NOT NULL,
+                            `receivedAt` INTEGER NOT NULL,
+                            `matched` INTEGER NOT NULL,
+                            `ruleId` TEXT
+                        )
+                        """.trimIndent()
+                    )
+                    db.execSQL(
+                        """
+                        CREATE TABLE IF NOT EXISTS `pending_transfers` (
+                            `id` INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                            `packageName` TEXT,
+                            `sourceName` TEXT NOT NULL,
+                            `rawText` TEXT NOT NULL,
+                            `detectedAt` INTEGER NOT NULL,
+                            `direction` TEXT NOT NULL,
+                            `dedupKey` TEXT NOT NULL,
+                            `createdAt` INTEGER NOT NULL
+                        )
+                        """.trimIndent()
+                    )
+                    db.execSQL(
+                        "CREATE INDEX IF NOT EXISTS index_pending_transfers_detectedAt " +
+                            "ON pending_transfers (detectedAt)"
+                    )
+                    db.execSQL(
+                        "CREATE INDEX IF NOT EXISTS index_pending_transfers_dedupKey " +
+                            "ON pending_transfers (dedupKey)"
+                    )
+                    db.execSQL(
+                        "CREATE TABLE IF NOT EXISTS room_master_table " +
+                            "(id INTEGER PRIMARY KEY, identity_hash TEXT)"
+                    )
+                    db.execSQL(
+                        "INSERT OR REPLACE INTO room_master_table (id, identity_hash) " +
+                            "VALUES(42, '')"
+                    )
+                }
+
+                override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+            })
+            .build()
+
+        val helper = FrameworkSQLiteOpenHelperFactory().create(config)
+        helper.writableDatabase.use { db ->
+            rows.forEachIndexed { i, (amount, direction, raw) ->
+                db.execSQL(
+                    "INSERT INTO transactions " +
+                        "(amount, direction, sourceKind, sourceName, rawText, " +
+                        "occurredAt, createdAt, confirmed) " +
+                        "VALUES (?, ?, 'BANK_SMS', '银行短信', ?, ?, ?, 0)",
+                    arrayOf(amount, direction, raw, 1_700_000_000_000L + i, 1_700_000_000_000L + i)
+                )
+            }
+        }
+        helper.close()
+    }
+
+    /**
+     * ⚠️ 本项目最重要的一条迁移测试。
+     *
+     * 逐条断言「方向按业务语义落位」，而不是笼统地「没崩就行」：
+     * 映射错了不会报错，只会静静改掉用户的历史账 —— 比崩溃更难发现。
+     */
+    @Test
+    fun migrationV3ToV4MapsNeutralByBusinessMeaning() = runTest {
+        createV3DatabaseWithDirections(
+            listOf(
+                Triple(500.0, "NEUTRAL", "您尾号1234账户提现人民币500.00元"),
+                Triple(3000.0, "NEUTRAL", "您尾号1234账户还款人民币3000.00元"),
+                Triple(200.0, "NEUTRAL", "信用卡还款成功 ¥200.00"),
+                Triple(88.0, "NEUTRAL", "微信支付 到账 ¥88.00"),
+                Triple(66.0, "NEUTRAL", null),
+                Triple(58.0, "EXPENSE", "您尾号1234账户支出人民币58.00元"),
+                Triple(900.0, "INCOME", "您尾号1234账户收入人民币900.00元"),
+            )
+        )
+
+        val db = openWithMigration()
+        try {
+            val all = db.transactionDao().observeAll().first()
+            assertEquals("一条都不能丢", 7, all.size)
+
+            val byRaw = all.associateBy { it.rawText }
+
+            fun directionOf(raw: String) = byRaw.getValue(raw).direction
+
+            // 提现：钱离开账户 → 支出
+            assertEquals(
+                "提现应落成支出",
+                Direction.EXPENSE,
+                directionOf("您尾号1234账户提现人民币500.00元"),
+            )
+            // 还款：钱离开储蓄卡 → 支出
+            assertEquals(
+                "还款应落成支出",
+                Direction.EXPENSE,
+                directionOf("您尾号1234账户还款人民币3000.00元"),
+            )
+            assertEquals(
+                "信用卡还款应落成支出",
+                Direction.EXPENSE,
+                directionOf("信用卡还款成功 ¥200.00"),
+            )
+            // 到账：钱进入账户 → 收入
+            assertEquals(
+                "到账应落成收入",
+                Direction.INCOME,
+                directionOf("微信支付 到账 ¥88.00"),
+            )
+            // rawText 为 null 也不能让 CASE 结果为 NULL
+            assertEquals(
+                "无原文的记录应兜底为收入，不能变成 NULL",
+                Direction.INCOME,
+                byRaw.getValue(null).direction,
+            )
+            // 原本就明确的方向不能被改动
+            assertEquals(
+                "原有支出不能被改动",
+                Direction.EXPENSE,
+                directionOf("您尾号1234账户支出人民币58.00元"),
+            )
+            assertEquals(
+                "原有收入不能被改动",
+                Direction.INCOME,
+                directionOf("您尾号1234账户收入人民币900.00元"),
+            )
+
+            // 最关键的断言：库里不能残留任何 NEUTRAL
+            val stillNeutral = all.count { it.direction.name == "NEUTRAL" }
+            assertEquals("不应残留 NEUTRAL 方向", 0, stillNeutral)
+        } finally {
+            db.close()
+        }
+    }
+
+    /**
+     * 兜底分支：库里若有 `'NEUTRAL'` 以外的手改脏值（例如用户拿工具直接改过库），
+     * 也必须收敛成 EXPENSE/INCOME，否则读出来会被 fromName 静默吞掉。
+     */
+    @Test
+    fun migrationV3ToV4AlsoCleansOtherUnknownDirections() = runTest {
+        createV3DatabaseWithDirections(
+            listOf(
+                Triple(77.0, "GARBAGE", "手改过的脏数据"),
+                Triple(12.0, "NEUTRAL", "无关键词的旧记录"),
+            )
+        )
+
+        val db = openWithMigration()
+        try {
+            val all = db.transactionDao().observeAll().first()
+            assertEquals(2, all.size)
+            all.forEach {
+                assertTrue(
+                    "方向必须是 EXPENSE 或 INCOME，实际=${it.direction}",
+                    it.direction == Direction.EXPENSE || it.direction == Direction.INCOME,
+                )
+            }
+        } finally {
+            db.close()
+        }
+    }
+
+    /** 迁移后数据库必须仍然可写，否则用户升级后记不了账 */
+    @Test
+    fun databaseIsWritableAfterV3ToV4Migration() = runTest {
+        createV3DatabaseWithDirections(
+            listOf(Triple(500.0, "NEUTRAL", "您尾号1234账户提现人民币500.00元"))
+        )
+
+        val db = openWithMigration()
+        try {
+            db.transactionDao().insert(
+                com.moneyflow.app.data.TransactionEntity(
+                    amount = 38.0,
+                    direction = Direction.EXPENSE,
+                    sourceKind = com.moneyflow.app.data.SourceKind.MANUAL,
+                    sourceName = "手动记录",
+                    occurredAt = 1_700_000_001_000L,
+                )
+            )
+            assertEquals(2, db.transactionDao().observeAll().first().size)
         } finally {
             db.close()
         }

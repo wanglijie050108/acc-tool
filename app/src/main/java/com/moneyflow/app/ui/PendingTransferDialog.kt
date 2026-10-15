@@ -103,7 +103,7 @@ fun PendingTransferDialog(
                 Spacer(Modifier.height(12.dp))
 
                 Text(
-                    text = "方向（不确定就用「中性」）",
+                    text = "方向（不确定就按默认，之后可以改）",
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
