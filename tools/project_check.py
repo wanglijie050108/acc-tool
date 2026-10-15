@@ -276,19 +276,40 @@ else:
     else:
         print("  [OK]   每次回到前台（onResume）都会跑启动门检测权限")
 
-    # 7.7 转账提醒的行内快捷填写（RemoteInput）
+    # 7.7 转账提醒的行内快捷填写（RemoteInput）—— 必须**真的挂到动作上**
     #
-    # 用户 2026-10-15 明确要求：「检测到转账但不知道金额，推送个小弹窗让用户
-    # 快捷填写，而不是让用户手动打开软件」。落地点是通知上的 RemoteInput 动作，
-    # 匹配 RemoteInput.Builder( —— 只匹配 import 不算接线（可能留个没用的 import）。
+    # ⚠️ 这条检查被强化过一次，原因值得记住：
+    # 第一版只查「文件里出现了 RemoteInput.Builder」—— 它**通过了**，
+    # 但功能是坏的：两个 RemoteInput 建出来之后**从来没被 addRemoteInput 挂到按钮上**，
+    # 「填入金额」只是个没有输入框的普通按钮，用户点下去接收器读到金额是 null。
+    # 也就是「检查通过 + 功能失效」，正是本项目最想避免的那种情况。
+    # 所以现在要求的是**接线**（addRemoteInput / MUTABLE），不是「造了个对象」。
     _transfer_prompt_code = _strip_comments(_read("capture/TransferPrompt.kt"))
     if not _transfer_prompt_code.strip():
         err("capture/TransferPrompt.kt 不存在或为空")
     elif not re.search(r"RemoteInput\.Builder\s*\(", _transfer_prompt_code):
         err("capture/TransferPrompt.kt 里没有 RemoteInput.Builder —— "
             "转账提醒不能行内快捷填写，用户仍需手动打开 App 补金额")
+    elif not re.search(r"\.addRemoteInput\s*\(", _transfer_prompt_code):
+        err("capture/TransferPrompt.kt 建了 RemoteInput 却没 addRemoteInput 挂到动作上 —— "
+            "「填入金额」会变成没有输入框的普通按钮（点了读不到金额，只回「没读懂」）")
+    elif not re.search(r"FLAG_MUTABLE", _transfer_prompt_code):
+        err("capture/TransferPrompt.kt 的快捷填写 PendingIntent 不是 FLAG_MUTABLE —— "
+            "RemoteInput 的内容由系统回填，不可变 PendingIntent 会读不到用户输入")
     else:
-        print("  [OK]   转账提醒支持通知内快捷填写（RemoteInput）")
+        print("  [OK]   转账提醒支持通知内快捷填写（RemoteInput 已挂到动作 + MUTABLE）")
+
+    # 7.10b 通道必须在**启动时**就建好（而不是等第一笔转账）
+    #
+    # 老通道（IMPORTANCE_DEFAULT）只有跑到 ensureChannel 才会被删掉。
+    # 若只在 show() 里懒建，用户装上新版本后、第一笔转账之前，
+    # 系统设置里挂着的那条通道仍是「永不弹横幅」的老通道 —— 用户看到的就是错的。
+    _app_code = _strip_comments(_read("MoneyFlowApp.kt"))
+    if not re.search(r"TransferPrompt\.ensureChannel\s*\(", _app_code):
+        err("MoneyFlowApp.onCreate 没有调用 TransferPrompt.ensureChannel —— "
+            "老通道要等第一笔转账才会被换成能弹横幅的新通道，用户装完即看到错误设置")
+    else:
+        print("  [OK]   启动时即建立提醒通道（老通道立即被清理）")
 
     # 7.8 快捷填写的落地分支：接收器必须真的处理 ACTION_QUICK_FILL
     #
@@ -308,6 +329,29 @@ else:
             "README 明确承诺「代码里没有申请网络权限，不可能上传」")
     else:
         print("  [OK]   未申请网络权限（隐私承诺未被破坏）")
+
+    # 7.10 转账提醒必须能「弹横幅气泡」——通道重要性必须是 HIGH
+    #
+    # 用户 2026-10-15 报障：「转账后能被检测到，但必须还是要回到 App 内部去填写」。
+    # 根因不是 RemoteInput 没做（7.7/7.8 都通过），而是**横幅根本没弹**：
+    # 通道当初是用 IMPORTANCE_DEFAULT 建的，而 Android **只有 IMPORTANCE_HIGH**
+    # 才会把通知渲染成 heads-up 横幅。用户注意不到那条静默通知，
+    # 于是点了通知正文 → 进 App → 在 App 里填，正好是这功能要消灭的路径。
+    #
+    # ⚠️ 这条特别容易被「善意的优化」弄坏：把 HIGH 改回 DEFAULT 看起来像是
+    # 「更克制、不打扰用户」，实际代价是整个提醒功能失效。所以必须有检查守着。
+    #
+    # 另外：Android 规定**通道重要性一经创建就改不了**（同 id 再 create 传 HIGH
+    # 无效，实机验证过），所以修它必须换新 id + 删掉老通道 —— 两条都要检查，
+    # 只写 HIGH 而不换 id，老用户设备上仍然是旧通道，等于没修。
+    if not re.search(r"NotificationManager\.IMPORTANCE_HIGH", _transfer_prompt_code):
+        err("capture/TransferPrompt.kt 的通道不是 IMPORTANCE_HIGH —— "
+            "转账提醒不会弹横幅气泡，用户注意不到，会退回「自己打开 App 填」")
+    elif not re.search(r"deleteNotificationChannel\s*\(", _transfer_prompt_code):
+        err("capture/TransferPrompt.kt 没有删除老通道 —— "
+            "通道重要性创建后不可改，老设备上仍是那个不弹横幅的旧通道（等于没修）")
+    else:
+        print("  [OK]   转账提醒通道为 IMPORTANCE_HIGH（能弹横幅）且会清理老通道")
 
 # ── 汇总 ───────────────────────────────────────────────────────
 print("\n" + "=" * 60)

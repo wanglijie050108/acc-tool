@@ -263,6 +263,54 @@ python tools/real_sms_check.py
 > 「两个绕不过去的限制」。快捷填写只是让「补金额」这件事从
 > 「切到 App、等启动、找记录」变成「在通知里输个数字」。
 
+> ⚠️ **这个功能第一版是坏的，2026-10-15 用户报障后才修对。** 详见第 14 条。
+> 两个真 bug（提醒根本不弹 + 输入框没挂上），而且**当时的自检全部通过**。
+
+**14. 转账提醒「弹不出来」+「输入框根本没挂上」（2026-10-15，用户报障）**
+
+用户原话：「转账后能被检测到，但是**必须还是要回到流水记账 app 内部去填写**」，
+并要的是「像微信或者 QQ 来了新消息给一个在通知栏弹出一个气泡弹窗一样」。
+
+查下来**不是理解偏差，是两个实打实的 bug**，而且第 13 条当时宣称「已实现」：
+
+**bug 1：横幅气泡根本不弹。** 通知通道是用 `IMPORTANCE_DEFAULT` 建的，
+而 **Android 只有 `IMPORTANCE_HIGH` 才会渲染成 heads-up 横幅**。
+同一台真机对照（REDMI K80 / Android 15）：
+本应用 `importance=3` → 不弹；微信「新消息通知」`importance=4` → 正常弹。
+当初为了「语气克制」特意选了 DEFAULT + 无声音 + 无震动，
+顺手把用户真正要的那个「弹一下」也一起删掉了 —— 用户注意不到通知，
+只能点通知正文，而正文点击是**故意保留的「进 App 补录」兜底路径**。
+
+**bug 2：输入框压根没挂到按钮上。** 两个 `RemoteInput` 建出来了，
+但动作用的是 `addAction(0, "填入金额", intent)` 这个**简写形式 —— 它没有输入框**，
+`addRemoteInput(...)` 一次都没调用，两个变量是**死代码**。
+点「填入金额」不会出现金额框，接收器读到 null，只会回一句「没读懂「」」。
+编译器其实报了 `Variable 'directionInput' is never used`，当时被漏看了。
+
+⚠️ 为什么没编译过却没发现：`NotificationCompat.Action.Builder.addRemoteInput()`
+要的是 **androidx** 的 `RemoteInput`，而代码 import 的是 `android.app.RemoteInput`
+（框架版）—— 类型不匹配，编译不过。**很可能就是当初挂不上去、退回简写按钮的原因。**
+所以踩这个坑时记住：**`NotificationCompat` 配 `androidx.core.app.RemoteInput`**。
+
+修复：
+- 通道换新 id `moneyflow_transfer_prompt_v2` + `IMPORTANCE_HIGH` + 提示音/震动。
+  ⚠️ **必须换新 id**：Android 规定**通道重要性一经创建就改不了**，
+  同 id 再 `createNotificationChannel` 传 HIGH 是无效的（实机验证过）。
+  老通道同时 `deleteNotificationChannel` 掉，否则设置页里留一条永不弹的同名通道。
+- 通道改为**启动时**就建（`MoneyFlowApp.onCreate` → `TransferPrompt.ensureChannel`）：
+  老通道只有跑到这儿才会被清掉，等第一笔转账才建的话，
+  用户装完新版本后会一直看到那条错的老通道。
+- 用 `Action.Builder(...).addRemoteInput(amountInput).addRemoteInput(directionInput)`。
+- 快捷填写的 `PendingIntent` 必须 `FLAG_MUTABLE`：RemoteInput 的内容是
+  **系统回填进 intent 的**，`FLAG_IMMUTABLE` 会导致读不到用户输入。
+
+⚠️ **这次的教训比 bug 本身重要**：第 13 条当时有自检 7.7，但它只检查
+「文件里出现了 `RemoteInput.Builder`」—— 于是**检查通过、功能是坏的**。
+这正是本项目反复吃到的那种失败。现在 7.7 要求的是**接线**
+（`addRemoteInput` + `FLAG_MUTABLE`），7.10 守通道必须 `IMPORTANCE_HIGH`
+且要删老通道，7.10b 守通道要启动时建。四条**都做了变异测试**：
+把任何一条改坏 → 自检退出码 1。
+
 ### 两个绕不过去的限制（真机验收发现，务必先读）
 
 这两条不是 bug，是数据源本身的性质。写在这里是因为它们会直接决定
