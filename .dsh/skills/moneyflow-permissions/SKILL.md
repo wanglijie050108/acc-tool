@@ -61,7 +61,7 @@ cannot exist — the button would look broken.
 
 | # | Decision | Why |
 |---|---|---|
-| 1 | **No `INTERNET` permission, ever** | README promises 「代码里没有申请网络权限，不可能上传」. This is the product's core privacy claim. Guarded by `project_check.py` 7.5 and `PermissionRequestTest.runtimePermissionSetIsSane` |
+| 1 | **No `INTERNET` permission, ever** | README promises 「代码里没有申请网络权限，不可能上传」. This is the product's core privacy claim. Guarded by `project_check.py` 7.9 and `PermissionRequestTest.runtimePermissionSetIsSane` |
 | 2 | **Only `EXPENSE` / `INCOME`; no `NEUTRAL`** | User's rule (2026-10-15). A neutral row is invisible in monthly totals. Direction genuinely unknown → ask via 待确认转账, never record a vague direction |
 | 3 | **`smsOnly = true` on broad bank-SMS rules** | Otherwise they outrank and steal WeChat/Alipay matches (real bug, `wechatMerchantRuleNotStolenByBroadSmsRule`) |
 | 4 | **Verification codes are never recorded** | Single implementation in `parse/MoneyText.kt`. Two copies once existed → SMS leaked codes |
@@ -79,7 +79,7 @@ Rule 7 is the one this skill adds. If you need a new permission guided, add a
 | Prompting on every cold start | Guard with `needsRuntimePrompt`. Repeated prompts trigger Android's **「不再询问」**, which locks the user out **permanently** — worse than not prompting at all |
 | Prompting again when already granted | Android returns silently; the user sees nothing and thinks the app is broken. Check state first |
 | Prompting during `onCreate` on every recreation | Rotation re-runs it. Gate on `savedInstanceState == null` |
-| Putting 通知使用权 in the startup path | That intent **opens the system settings list**. Cold start would dump the user into system UI unannounced. `PROMPTABLE_ON_START` deliberately excludes it |
+| Putting 通知使用权 in the startup path | ~~Cold start would dump the user into system UI unannounced~~ — **REVERSED 2026-10-15**: the user explicitly asked 「每次打开软件自动检测通知权限和后台运行权限，如果没打开就要求打开」. `PermissionRequest.STARTUP_ASK_ORDER` now ends with `NOTIFICATION_ACCESS` (app jumps to the system list itself), once per process via `askedThisProcess`, after all popup-able kinds. Test: `notificationAccessIsDemandedOnAppOpen`. Guard: `project_check.py` 7.6 |
 | Assuming `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` always resolves | Some ROMs (Meizu, some HyperOS builds) don't implement it → `ActivityNotFoundException`. **Degrade**, never crash: this is why `startSafely` exists ([known issue](https://github.com/torlando-tech/columba/pull/352)) |
 | Confusing the two battery intents | `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` = the dialog. `ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS` = the list page. Only the first is a "popup" |
 | Treating 「已授权」 as 「已连接」 | For notification listener these are different. The static grant can be on while the service is unbound and **no notifications arrive**. Settings page shows `已授权·未连接` — see `docs/真机验收记录.md` |
@@ -98,7 +98,7 @@ bash tools/build_and_install.sh    # only when installing to a phone
 | Layer | Baseline (2026-10-15) | What it protects |
 |---|---|---|
 | 结构自检 `project_check.py` | 通过 | Manifest/resources/packages + **permission wiring** (§5) |
-| JVM 单元测试 | **166 通过** | Parse rules, fingerprint, CSV, permission logic |
+| JVM 单元测试 | **173 通过** | Parse rules, fingerprint, CSV, permission logic + startup gate |
 | 解析引擎 runner | 通过 | Engine without JUnit |
 | `rule_check.py` | 通过 (36/36) | Python↔Kotlin rule agreement |
 | `real_sms_check.py` | **19/19** | 10 real bank SMS templates |
@@ -115,7 +115,11 @@ If a number **rises**, update this table and the README in the same sit.
 | *Wiring* (startup + 3 buttons actually call it) | ✅ structural check + mutation tested |
 | App starts on a real phone without crashing after the change | ✅ REDMI K80 / Android 15, `MainActivity` focused, no `FATAL`, `KeepAliveService` up |
 | Anti-nag works (already-granted ⇒ no prompt) | ✅ observed live: all runtime perms granted ⇒ no dialog on launch |
+| Startup gate logic (order, session memory, access jump) | ✅ 7 unit tests + structural check 7.6 (mutation-tested) |
+| Inline quick-fill wiring (RemoteInput + receiver branch) | ✅ structural checks 7.7/7.8 (mutation-tested); behavior logic covered by `MoneyTextTest.parseAmount` |
 | **The system dialog actually appears to the user** | ⏸ **not verified on-device** |
+| **Startup gate dialogs / access jump on a real phone** | ⏸ **not verified on-device** (needs: revoke perms by hand → open app → observe) |
+| **Quick-fill notification flow on a real phone** | ⏸ **not verified on-device** (needs: trigger a real transfer notification → fill inline → confirm row) |
 
 The last row is a real gap, and the reason is a platform restriction: **`adb shell pm
 revoke` is refused on HyperOS** (`SecurityException: REVOKE_RUNTIME_PERMISSIONS`), so
@@ -142,6 +146,12 @@ So `tools/project_check.py` §7 checks the wiring, on comment-stripped source:
 4. No other file redefines `openAppSettings` / `openBatterySettings` /
    `openNotificationAccessSettings`
 5. `AndroidManifest.xml` has no `INTERNET` / `ACCESS_NETWORK_STATE`
+6. `onResume` calls `PermissionRequest.ensureOnAppOpen` — the every-open permission
+   gate (user requirement, 2026-10-15)
+7. `capture/TransferPrompt.kt` uses `RemoteInput.Builder(` — the transfer reminder
+   supports inline quick-fill without opening the app
+8. `capture/PendingTransferActionReceiver.kt` handles `ACTION_QUICK_FILL ->` —
+   the quick-fill actually writes to the DB
 
 **These checks were themselves verified by mutation.** A check that cannot fail is
 decoration. Reproduce it like this:

@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.moneyflow.app.data.Direction
 import com.moneyflow.app.data.PendingTransferEntity
+import com.moneyflow.app.parse.MoneyText
 
 /**
  * 「检测到一笔转账，金额是多少？」补录弹窗。
@@ -63,7 +64,7 @@ fun PendingTransferDialog(
     var merchant by remember(stateKey) { mutableStateOf("") }
     var note by remember(stateKey) { mutableStateOf("") }
 
-    val amountValid = amount.replace(",", "").trim().toDoubleOrNull()?.let { it > 0 } == true
+    val amountValid = MoneyText.parseAmount(amount) != null
 
     // 自动聚焦 + 自动弹键盘。这是「3 秒输完」的关键一步：
     // 用户不用再点一下输入框。

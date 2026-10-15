@@ -192,6 +192,15 @@ class MainActivity : ComponentActivity() {
         // 每次回到前台都请求一次重连，让服务自动恢复。
         // 这是「自愈」：用户只要打开一次 App，监听就重新生效。
         NotificationCaptureService.requestRebind(this)
+        // 启动门（用户 2026-10-15 要求）：**每次打开软件**都自动检测
+        // 通知权限 / 后台运行权限（还有短信、通知使用权），
+        // 缺哪项就直接弹系统对话框或跳系统开关列表，不让用户自己去设置里翻。
+        //
+        // 放在 onResume 而不是只在 onCreate：划掉权限弹窗后用户什么都没损失，
+        // 但下次打开 App 会再检测到、再要求 —— 「每次打开都要求」正是本来的目的。
+        // 同一进程里每项只要求一次（PermissionRequest 内部的会话记忆），
+        // 所以不会因为在系统界面回来又弹一次。
+        PermissionRequest.ensureOnAppOpen(this, permissionLauncher)
     }
 
     /**

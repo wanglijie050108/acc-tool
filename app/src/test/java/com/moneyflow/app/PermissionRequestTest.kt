@@ -3,6 +3,7 @@ package com.moneyflow.app
 import com.moneyflow.app.ui.PermissionRequest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -142,31 +143,156 @@ class PermissionRequestTest {
         )
     }
 
-    // ─────────── 3. 启动时只弹「能弹的」 ───────────
+    // ─────────── 3. 启动门：每次打开 App 都检测 ───────────
 
     /**
-     * ⚠️ 这条守住「启动时不要把用户拽到系统设置界面」。
+     * 启动门的顺序表里，每种权限**必须且只能**出现一次。
      *
-     * 通知使用权弹不出来：如果它被放进启动流程，冷启动会**直接跳系统设置列表**，
-     * 用户打开 App 却发现自己站在系统界面里，非常唐突。
-     * 所以启动路径只允许包含真正能弹窗的项。
+     * 这条是防「加了新 Kind 却忘了加进顺序表」—— 那种疏漏编译不报错、
+     * 单测不失败，但启动门会永远跳过那项权限，用户再也收不到授权引导。
+     * （本项目丢过一次功能，根因正是「没有东西在守」。）
      */
     @Test
-    fun startUpPromptOnlyContainsPromptableKinds() {
-        assertTrue(
-            "启动流程里出现了弹不出窗的权限项，会把用户直接拽进系统设置页",
-            PermissionRequest.PROMPTABLE_ON_START.all { PermissionRequest.canPromptInApp(it) },
+    fun startupGateOrderCoversEveryKindExactlyOnce() {
+        val order = PermissionRequest.STARTUP_ASK_ORDER
+        assertEquals(
+            "启动门顺序表必须覆盖全部 Kind，一个都不能漏",
+            PermissionRequest.Kind.entries.size,
+            order.size,
+        )
+        assertEquals(
+            "同一种权限在顺序表里重复出现，会请求两次",
+            PermissionRequest.Kind.entries.toSet(),
+            order.toSet(),
         )
     }
 
-    /** 通知使用权**不得**出现在启动流程里（值不值得弹是一回事，能不能弹是另一回事） */
+    /**
+     * 全都缺 → 先要运行时权限（通知/短信）。
+     *
+     * 排序理由：系统运行时弹窗**不切换界面**，成本最低；
+     * 通知使用权要跳系统开关列表（把用户带出 App），放最后。
+     */
     @Test
-    fun notificationAccessIsNotPromptedOnStartUp() {
-        assertFalse(
-            "通知使用权只能在设置页引导，不能进启动流程（会突然跳系统界面）",
-            PermissionRequest.PROMPTABLE_ON_START.contains(
-                PermissionRequest.Kind.NOTIFICATION_ACCESS
+    fun startupGateAsksRuntimePermissionFirst() {
+        val next = PermissionRequest.nextStartupAsk(
+            notificationAccessGranted = false,
+            smsGranted = false,
+            notificationGranted = false,
+            batteryOptimized = false,
+            asked = emptySet(),
+        )
+        assertEquals(PermissionRequest.Kind.NOTIFICATION, next)
+    }
+
+    /** 运行时权限齐了、电池优化没开 → 要电池优化（系统「是否允许」对话框） */
+    @Test
+    fun startupGateAsksBatteryAfterRuntimeGranted() {
+        val next = PermissionRequest.nextStartupAsk(
+            notificationAccessGranted = false,
+            smsGranted = true,
+            notificationGranted = true,
+            batteryOptimized = false,
+            asked = emptySet(),
+        )
+        assertEquals(PermissionRequest.Kind.BATTERY, next)
+    }
+
+    /**
+     * 全齐 → 启动门静默。
+     *
+     * 这是防骚扰的底线：权限给全之后每次打开 App 都默默无闻，
+     * 绝不弹任何系统框。
+     */
+    @Test
+    fun startupGateIsSilentWhenEverythingGranted() {
+        val next = PermissionRequest.nextStartupAsk(
+            notificationAccessGranted = true,
+            smsGranted = true,
+            notificationGranted = true,
+            batteryOptimized = true,
+            asked = emptySet(),
+        )
+        assertNull("权限齐了还要求 = 骚扰用户", next)
+    }
+
+    /**
+     * 本进程已要求过的项要跳过。
+     *
+     * 防的是这个死循环：用户拒绝电池优化 → 从系统对话框回到 App →
+     * onResume 再跑一次门 → 又弹 → 用户被弹到崩溃。
+     * 进程级记忆保证一次「打开」里每项最多主动要求一次。
+     */
+    @Test
+    fun startupGateSkipsKindsAlreadyAskedThisProcess() {
+        val next = PermissionRequest.nextStartupAsk(
+            notificationAccessGranted = false,
+            smsGranted = false,
+            notificationGranted = false,
+            batteryOptimized = false,
+            asked = setOf(
+                PermissionRequest.Kind.NOTIFICATION,
+                PermissionRequest.Kind.SMS,
             ),
+        )
+        assertEquals(
+            "运行时权限本进程已要求过，该轮到电池优化",
+            PermissionRequest.Kind.BATTERY,
+            next,
+        )
+    }
+
+    /** 缺的项本进程全都要求过了 → 也静默（等下次打开 App 再说） */
+    @Test
+    fun startupGateReturnsNullWhenAllMissingAlreadyAsked() {
+        val next = PermissionRequest.nextStartupAsk(
+            notificationAccessGranted = false,
+            smsGranted = false,
+            notificationGranted = false,
+            batteryOptimized = false,
+            asked = setOf(
+                PermissionRequest.Kind.NOTIFICATION,
+                PermissionRequest.Kind.SMS,
+                PermissionRequest.Kind.BATTERY,
+                PermissionRequest.Kind.NOTIFICATION_ACCESS,
+            ),
+        )
+        assertNull(next)
+    }
+
+    /**
+     * ⚠️ **行为反转测试**（用户 2026-10-15 明确要求，别改回去）：
+     *
+     * 通知使用权现在**会**进启动门 —— 缺了就由 App 直接跳系统开关列表，
+     * 而不是只在设置页放一张卡片等用户自己翻。
+     *
+     * 旧行为（`notificationAccessIsNotPromptedOnStartUp`）断言它**不得**出现在
+     * 启动流程里，理由是「冷启动会把用户直接拽进系统界面，很唐突」。
+     * 用户原话：「每次打开软件自动检测通知权限和后台运行权限，
+     * **如果没打开就要求打开，而不是让用户自己去手动确认**」——
+     * 主动跳过去正是「替用户打开」，与「让用户自己去设置里找」是两回事。
+     *
+     * 与上面几条不矛盾：它排在顺序表最后，且受 askedThisProcess 约束，
+     * 一次打开里最多被跳一次，用户从系统界面返回后不会再次被拽走。
+     */
+    @Test
+    fun notificationAccessIsDemandedOnAppOpen() {
+        val next = PermissionRequest.nextStartupAsk(
+            notificationAccessGranted = false,
+            smsGranted = true,
+            notificationGranted = true,
+            batteryOptimized = true,
+            asked = emptySet(),
+        )
+        assertEquals(
+            "通知使用权缺失时，启动门要直接跳系统开关列表（用户 2026-10-15 要求）",
+            PermissionRequest.Kind.NOTIFICATION_ACCESS,
+            next,
+        )
+        // 但注意：它仍然排在最后 —— 先把不切换界面的系统对话框弹完
+        assertEquals(
+            PermissionRequest.Kind.NOTIFICATION_ACCESS,
+            PermissionRequest.STARTUP_ASK_ORDER.last(),
         )
     }
 

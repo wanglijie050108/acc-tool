@@ -3,7 +3,9 @@ package com.moneyflow.app
 import com.moneyflow.app.parse.MoneyText
 import com.moneyflow.app.parse.ParseEngine
 import com.moneyflow.app.parse.ParseResult
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -83,6 +85,34 @@ class MoneyTextTest {
                 ParseEngine.parse(text, "com.tencent.mm", 0L) is ParseResult.NoAmount,
             )
         }
+    }
+
+    // ─────────── 用户手输金额的解析（快捷填写 / 补录弹窗共用）───────────
+
+    /**
+     * parseAmount 有三处调用方：补录弹窗、ViewModel 补录、
+     * 通知里的快捷填写（RemoteInput）。语义必须和原来两处一模一样，
+     * 否则「弹窗里能记账、通知里记不上」这种不一致会很难查。
+     */
+    @Test
+    fun parseAmountAcceptsNormalInputs() {
+        assertEquals(38.50, MoneyText.parseAmount("38.50")!!, 0.001)
+        assertEquals(88.0, MoneyText.parseAmount("88")!!, 0.001)
+        assertEquals(1234.56, MoneyText.parseAmount("1,234.56")!!, 0.001)
+        // 首尾空白要容忍：通知里手输很容易带空格
+        assertEquals(12.0, MoneyText.parseAmount("  12  ")!!, 0.001)
+    }
+
+    @Test
+    fun parseAmountRejectsNonPositiveAndGarbage() {
+        assertNull(MoneyText.parseAmount(null))
+        assertNull(MoneyText.parseAmount(""))
+        assertNull(MoneyText.parseAmount("   "))
+        assertNull(MoneyText.parseAmount("abc"))
+        assertNull(MoneyText.parseAmount("12.3.4"))
+        assertNull(MoneyText.parseAmount("¥38.50")) // 用户不该连货币符号一起输，但输了要拒
+        assertNull(MoneyText.parseAmount("0"))
+        assertNull(MoneyText.parseAmount("-5"))
     }
 
     // ─────────── 边界 ───────────

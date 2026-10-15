@@ -60,4 +60,24 @@ object MoneyText {
         val lower = text.lowercase()
         return VERIFICATION_MARKERS.any { lower.contains(it) }
     }
+
+    /**
+     * 把用户手输的金额解析成 Double；解析不出来返回 null。
+     *
+     * ── 为什么抽到这里（唯一实现）────────────────────────────
+     * 「用户输入的金额文本 → Double」原本在两处各写一份：
+     *   - `TransactionViewModel.confirmPendingTransfer`（补录入库）
+     *   - `PendingTransferDialog` 的金额有效性判断
+     * 本项目已经因「同一逻辑写两份」连踩两坑（指纹、验证码判定），
+     * 现在快捷填写（通知里 RemoteInput 直接填金额）是第三处调用方，
+     * 所以先抽成唯一实现再让三处共用。
+     *
+     * 规则（与原来两处的语义保持一致，不是新发明）：
+     *   - 忽略千分位逗号："1,234.56" → 1234.56
+     *   - 忽略首尾空白：" 38.50 " → 38.50
+     *   - 非数字、空串、null → null
+     *   - 0 和负数 → null（记账金额必须为正）
+     */
+    fun parseAmount(text: String?): Double? =
+        text?.replace(",", "")?.trim()?.toDoubleOrNull()?.takeIf { it > 0 }
 }

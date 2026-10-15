@@ -260,7 +260,48 @@ else:
     else:
         print("  [OK]   权限查询/跳转没有重复实现")
 
-    # 7.5 不得申请网络权限（README 的隐私承诺）
+    # 7.6 启动门接线：每次回到前台（onResume）都要检测权限
+    #
+    # 用户 2026-10-15 明确要求：「每次打开软件自动检测通知权限和后台运行权限，
+    # 如果没打开就要求打开」。那条改动只在 onCreate 的冷启动申请上追加是不够的 ——
+    # 划掉弹窗后用户回到 App，onResume 是唯一还会跑的入口。
+    # 这条检查守的就是这个接线（剥注释后匹配，理由同 7.1）。
+    _onresume = re.search(r"override\s+fun\s+onResume\b.*?(?=\n    override|\n    private|\Z)",
+                          _main_code, re.DOTALL)
+    if _onresume is None:
+        err("MainActivity.kt 里找不到 onResume —— 无法确认「每次打开」是否检测权限")
+    elif not re.search(r"PermissionRequest\.ensureOnAppOpen\s*\(", _onresume.group(0)):
+        err("MainActivity.onResume 里没有调用 PermissionRequest.ensureOnAppOpen —— "
+            "启动门没接线，「每次打开自动检测权限、缺了就直接要求打开」会失效")
+    else:
+        print("  [OK]   每次回到前台（onResume）都会跑启动门检测权限")
+
+    # 7.7 转账提醒的行内快捷填写（RemoteInput）
+    #
+    # 用户 2026-10-15 明确要求：「检测到转账但不知道金额，推送个小弹窗让用户
+    # 快捷填写，而不是让用户手动打开软件」。落地点是通知上的 RemoteInput 动作，
+    # 匹配 RemoteInput.Builder( —— 只匹配 import 不算接线（可能留个没用的 import）。
+    _transfer_prompt_code = _strip_comments(_read("capture/TransferPrompt.kt"))
+    if not _transfer_prompt_code.strip():
+        err("capture/TransferPrompt.kt 不存在或为空")
+    elif not re.search(r"RemoteInput\.Builder\s*\(", _transfer_prompt_code):
+        err("capture/TransferPrompt.kt 里没有 RemoteInput.Builder —— "
+            "转账提醒不能行内快捷填写，用户仍需手动打开 App 补金额")
+    else:
+        print("  [OK]   转账提醒支持通知内快捷填写（RemoteInput）")
+
+    # 7.8 快捷填写的落地分支：接收器必须真的处理 ACTION_QUICK_FILL
+    #
+    # 只有通知里有输入框还不够 —— 用户点了发送，得有接收器把它写进数据库。
+    # 匹配 when 分支 `ACTION_QUICK_FILL ->`，常量定义不算接线。
+    _receiver_code = _strip_comments(_read("capture/PendingTransferActionReceiver.kt"))
+    if not re.search(r"ACTION_QUICK_FILL\s*->", _receiver_code):
+        err("capture/PendingTransferActionReceiver.kt 不处理 ACTION_QUICK_FILL —— "
+            "通知里的「填入金额」按钮点了不会有反应")
+    else:
+        print("  [OK]   快捷填写由 PendingTransferActionReceiver 落地")
+
+    # 7.9 不得申请网络权限（README 的隐私承诺）
     _manifest = MANIFEST.read_text(encoding="utf-8")
     if re.search(r"android\.permission\.(INTERNET|ACCESS_NETWORK_STATE)", _manifest):
         err("AndroidManifest.xml 申请了网络权限 —— "

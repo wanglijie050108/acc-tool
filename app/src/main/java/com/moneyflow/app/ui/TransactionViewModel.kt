@@ -14,6 +14,7 @@ import com.moneyflow.app.data.TransactionRepository
 import com.moneyflow.app.csv.CsvParseResult
 import com.moneyflow.app.csv.CsvParser
 import com.moneyflow.app.parse.CustomRuleStore
+import com.moneyflow.app.parse.MoneyText
 import com.moneyflow.app.parse.ParseEngine
 import com.moneyflow.app.parse.ParseRule
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -153,8 +154,7 @@ class TransactionViewModel(application: Application) : AndroidViewModel(applicat
         merchant: String,
         note: String,
     ) {
-        val amount = amountText.replace(",", "").trim().toDoubleOrNull() ?: return
-        if (amount <= 0.0) return
+        val amount = MoneyText.parseAmount(amountText) ?: return
 
         val context = getApplication<Application>()
         viewModelScope.launch {

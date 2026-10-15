@@ -3,6 +3,7 @@ package com.moneyflow.app.capture
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.RemoteInput
 import android.content.Context
 import android.content.Intent
 import android.os.Build
@@ -10,7 +11,9 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.moneyflow.app.MainActivity
+import com.moneyflow.app.data.Direction
 import com.moneyflow.app.data.PendingTransferEntity
+import com.moneyflow.app.ui.Fmt
 
 /**
  * 待确认转账的提醒通知。
@@ -18,8 +21,18 @@ import com.moneyflow.app.data.PendingTransferEntity
  * ── 为什么用通知而不是悬浮窗 ──
  * 悬浮窗（SYSTEM_ALERT_WINDOW）在国产 ROM 上会被「支付保护 / 支付保险箱」
  * 拦截，需要用户额外关掉系统开关才行（这是实测结论，多个记账 App 的
- * 帮助文档里都提到了）。而通知只需要 [POST_NOTIFICATIONS]，用户点一下就
- * 进 App —— 对「转账后补个金额」这个动作来说，通知足够，且干扰更小。
+ * 帮助文档里都提到了）。而通知只需要 [POST_NOTIFICATIONS]，
+ * 对「转账后补个金额」这个动作来说，通知足够，且干扰更小。
+ *
+ * ── 快捷填写（用户 2026-10-15 明确要求）────────────────────────
+ * 「检测到转账但是不知道金额，就推送个小弹窗让用户快捷填写，
+ *   而不是让用户手动打开软件补充金额。」
+ *
+ * 落地为通知上的 **RemoteInput 行内输入**：
+ * 用户在通知栏直接点「填入金额」→ 金额框在通知里展开 → 输入数字、
+ * （可选）点一下「支出/收入」→ 点发送，直接入库。
+ * 全程不打开 App —— 老的「点通知进 App 再补」路径保留为兜底
+ * （通知正文点击仍进完整补录弹窗）。
  *
  * ── 语气要克制 ──
  * 这类提醒是在**打断用户**，所以：
@@ -43,11 +56,24 @@ object TransferPrompt {
     private const val NOTIFICATION_ID_BASE = 2000
 
     /**
+     * 快捷填写里金额输入框的 key。
+     *
+     * [PendingTransferActionReceiver] 用同一个 key 从
+     * `RemoteInput.getResultsFromIntent` 里取值 —— 构造和读取必须一致，
+     * 所以只在这里定义一份。
+     */
+    const val KEY_QUICK_AMOUNT = "quick_amount"
+
+    /** 快捷填写里方向选择（支出/收入）的 key。没选时回退到记录的猜测方向 */
+    const val KEY_QUICK_DIRECTION = "quick_direction"
+
+    /**
      * 弹出一条「检测到转账，请补金额」的通知。
      *
+     * @param hint 追加在文案里的提示。金额没读懂、要用户重填时传
      * @return true 表示通知已发出（用户授权了通知权限），false 表示被系统拦下
      */
-    fun show(context: Context, pending: PendingTransferEntity): Boolean {
+    fun show(context: Context, pending: PendingTransferEntity, hint: String? = null): Boolean {
         val appContext = context.applicationContext
         ensureChannel(appContext)
 
@@ -69,9 +95,10 @@ object TransferPrompt {
         }
 
         // requestCode 用记录 id，保证每笔转账的 PendingIntent 互不覆盖
+        val requestCode = (pending.id % 100000).toInt()
         val contentIntent = PendingIntent.getActivity(
             appContext,
-            (pending.id % 100000).toInt(),
+            requestCode,
             tapIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
@@ -83,23 +110,55 @@ object TransferPrompt {
         }
         val dismissPendingIntent = PendingIntent.getBroadcast(
             appContext,
-            (pending.id % 100000).toInt(),
+            requestCode,
             dismissIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
 
-        val notification = NotificationCompat.Builder(appContext, CHANNEL_ID)
-            .setContentTitle("检测到一笔${shortSource(pending.sourceName)}")
-            .setContentText("通知里没有金额，点一下补上金额就能记账")
-            .setStyle(
-                NotificationCompat.BigTextStyle().bigText(
-                    "原文：${pending.rawText}\n\n" +
-                        "微信/支付宝的转账通知里不含金额，所以需要你补一下。\n" +
-                        "点这条通知 → 输入金额 → 完成记账。"
-                )
+        // 「填入金额」：行内输入，不打开 App。
+        // 两个 RemoteInput —— 金额（文本）+ 方向（支出/收入 二选一，可不选）。
+        // 用户不选方向时接收器回退到记录的猜测方向（见 PendingTransferActionReceiver）。
+        val amountInput = RemoteInput.Builder(KEY_QUICK_AMOUNT)
+            .setLabel("金额（元）")
+            .build()
+        val directionInput = RemoteInput.Builder(KEY_QUICK_DIRECTION)
+            .setLabel("方向（不选就按默认）")
+            .setChoices(arrayOf("支出", "收入"))
+            .build()
+        val quickFillIntent = Intent(appContext, PendingTransferActionReceiver::class.java).apply {
+            action = PendingTransferActionReceiver.ACTION_QUICK_FILL
+            putExtra(PendingTransferActionReceiver.EXTRA_PENDING_ID, pending.id)
+        }
+        val quickFillPendingIntent = PendingIntent.getBroadcast(
+            appContext,
+            requestCode,
+            quickFillIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+
+        val body = buildString {
+            if (hint != null) {
+                append("⚠️ $hint\n\n")
+            }
+            append("原文：${pending.rawText}\n\n")
+            append(
+                "微信/支付宝的转账通知里不含金额，所以需要你补一下。\n" +
+                    "点下面的「填入金额」，直接在通知里输入即可，不用打开 App。"
             )
+        }
+
+        val notification = NotificationCompat.Builder(appContext, CHANNEL_ID)
+            .setContentTitle(
+                if (hint != null) "补一下这笔转账的金额" else "检测到一笔${shortSource(pending.sourceName)}"
+            )
+            .setContentText(
+                hint ?: "点「填入金额」直接补，不用打开 App"
+            )
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setSmallIcon(android.R.drawable.ic_menu_edit)
             .setContentIntent(contentIntent)
+            // ⚠️ 动作顺序即显示顺序：最常用的「填入金额」放最前
+            .addAction(0, "填入金额", quickFillPendingIntent)
             .addAction(0, "不是转账", dismissPendingIntent)
             .setAutoCancel(true)
             // 用 DEFAULT 而不是 HIGH：这不是紧急事件，
@@ -117,6 +176,71 @@ object TransferPrompt {
             // Android 13+ 未授权时 notify 会抛 SecurityException
             Log.w(TAG, "发送转账提醒失败", t)
             false
+        }
+    }
+
+    /**
+     * 快捷填写完成后的**回执通知**，复用同一条通知的 id（原地替换提醒）。
+     *
+     * 为什么需要：整个填写过程发生在通知栏里，用户从未打开 App。
+     * 不留一句「记上了」的反馈，用户会怀疑到底存没存 ——
+     * 记账类 App 的信任就死在这种小事上。
+     *
+     * @param deduplicated true = 与已有流水重复未入库（银行短信可能已记过）
+     */
+    fun showResult(
+        context: Context,
+        pending: PendingTransferEntity,
+        amount: Double,
+        direction: Direction,
+        deduplicated: Boolean,
+    ) {
+        val appContext = context.applicationContext
+        if (!NotificationManagerCompat.from(appContext).areNotificationsEnabled()) return
+        ensureChannel(appContext)
+
+        val directionText = when (direction) {
+            Direction.EXPENSE -> "支出"
+            Direction.INCOME -> "收入"
+        }
+        val money = Fmt.amount(amount)
+
+        val notification = NotificationCompat.Builder(appContext, CHANNEL_ID)
+            .setContentTitle(
+                if (deduplicated) "这笔已经记过了，没有重复记"
+                else "已记账：${pending.sourceName}"
+            )
+            .setContentText(
+                if (deduplicated) {
+                    "同金额同方向的流水已存在（可能银行扣款短信先到了），已跳过"
+                } else {
+                    "$directionText ¥$money · 方向不对可在流水列表里改"
+                }
+            )
+            .setStyle(
+                NotificationCompat.BigTextStyle().bigText(
+                    if (deduplicated) {
+                        "同金额同方向的流水已存在（可能银行扣款短信先到了），未重复记。"
+                    } else {
+                        "$directionText ¥$money\n原文：${pending.rawText}\n\n" +
+                            "方向不对、想改对方/备注，去流水列表里点这条记录即可。"
+                    }
+                )
+            )
+            .setSmallIcon(android.R.drawable.ic_menu_info_details)
+            // 回执不是要用户动手的事，几秒后自动消失，不赖在通知栏
+            .setTimeoutAfter(10_000L)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setSound(null)
+            .setVibrate(null)
+            .build()
+
+        try {
+            NotificationManagerCompat.from(appContext)
+                .notify(notificationId(pending.id), notification)
+        } catch (t: Throwable) {
+            Log.w(TAG, "发送记账回执失败", t)
         }
     }
 
